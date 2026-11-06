@@ -138,6 +138,11 @@ class PageCanvas(QAbstractScrollArea):
         self._sel_start: pymupdf.Point | None = None
         self._sel_rects: list[pymupdf.Rect] = []
         self.selected_text = ""
+        # Editing hooks: an object with on_press / on_drag / on_release / on_hover / on_double /
+        # on_key / on_text_selected / field_press / field_hover / paint (all optional).
+        self.interactor = None
+        self.tool: str | None = None
+        self._tool_page = -1
 
     # ------------------------------------------------------------------ setup
     def set_document(self, doc: pymupdf.Document) -> None:
@@ -172,6 +177,29 @@ class PageCanvas(QAbstractScrollArea):
         self._jobs.clear()
         self._sel_rects = []
         self.selected_text = ""
+
+    def invalidate_page(self, page: int) -> None:
+        """Forget cached rendering of one page after it was modified."""
+        self._pages.pop(page, None)
+        for k in [k for k in self._cache if k[1] == page]:
+            img = self._cache.pop(k)[0]
+            self._cache_bytes -= img.sizeInBytes()
+        self._schedule()
+        self.viewport().update()
+
+    def replace_document(self, doc: pymupdf.Document) -> None:
+        """Swap the document (after undo / page operations) keeping the reading position."""
+        page, frac = self.current_page, self.position_frac()
+        self.clear_caches()
+        self.doc = doc
+        self._reset_sizes()
+        self.cur_row = 0
+        self.relayout()
+        self.goto_page(min(page, max(0, self.n - 1)), frac)
+
+    def _hook(self, name: str):
+        it = self.interactor
+        return getattr(it, name, None) if it is not None else None
 
     def close_document(self) -> None:
         self._probe_timer.stop()
@@ -705,6 +733,11 @@ class PageCanvas(QAbstractScrollArea):
         p.end()
 
     def _paint_overlays(self, p: QPainter, page: int, wr: QRect) -> None:
+        hook = self._hook("paint")
+        if hook is not None:
+            p.save()
+            hook(p, page, wr)
+            p.restore()
         hits = self.search_hits.get(page)
         if hits:
             p.setPen(Qt.NoPen)
@@ -781,6 +814,9 @@ class PageCanvas(QAbstractScrollArea):
         if self.doc is None:
             return super().keyPressEvent(ev)
         k = ev.key()
+        key_hook = self._hook("on_key")
+        if key_hook is not None and key_hook(ev):
+            return
         vs = self.verticalScrollBar()
         hs = self.horizontalScrollBar()
         paged = self.paged
@@ -845,7 +881,7 @@ class PageCanvas(QAbstractScrollArea):
             return
         if ev.button() != Qt.LeftButton:
             return
-        note = self._note_at(pos)
+        note = self._note_at(pos) if self.tool is None else None
         if note is not None:
             self._drag_mode = None
             self.noteClicked.emit(note["id"])
@@ -855,6 +891,24 @@ class PageCanvas(QAbstractScrollArea):
             self._start_pan(pos)
             return
         page, pt = hit
+        field_hook = self._hook("field_press")
+        if self.tool is None and field_hook is not None and field_hook(page, pt):
+            self._drag_mode = None
+            return
+        press_hook = self._hook("on_press")
+        if self.tool is not None and press_hook is not None:
+            mode = press_hook(page, pt, ev.modifiers())
+            if mode == "drag":
+                self._drag_mode = "tool"
+                self._tool_page = page
+                return
+            if mode == "done":
+                self._drag_mode = None
+                return
+            if mode == "pan":
+                self._start_pan(pos)
+                return
+            # "select": fall through to the normal text selection
         self._press_link = self._link_at(page, pt)
         pd = self._page(page)
         if pd.words() and not (ev.modifiers() & Qt.AltModifier):
@@ -877,6 +931,18 @@ class PageCanvas(QAbstractScrollArea):
         if self._drag_mode == "pan":
             self.horizontalScrollBar().setValue(self._pan_origin[0] - pos.x())
             self.verticalScrollBar().setValue(self._pan_origin[1] - pos.y())
+            return
+        if self._drag_mode == "tool":
+            hit = self.widget_to_page(pos, clamp_page=self._tool_page)
+            drag_hook = self._hook("on_drag")
+            if hit is not None and drag_hook is not None:
+                drag_hook(hit[0], hit[1])
+            vh = self.viewport().height()
+            if pos.y() > vh - 16:
+                self.verticalScrollBar().setValue(self.verticalScrollBar().value() + 16)
+            elif pos.y() < 16:
+                self.verticalScrollBar().setValue(self.verticalScrollBar().value() - 16)
+            self.viewport().update()
             return
         if self._drag_mode == "select" and self._sel_start is not None:
             if self._press_pos is not None and (pos - self._press_pos).manhattanLength() < 4:
@@ -901,6 +967,15 @@ class PageCanvas(QAbstractScrollArea):
         hit = self.widget_to_page(pos)
         if hit is not None:
             page, pt = hit
+            hover = self._hook("on_hover") if self.tool is not None else self._hook("field_hover")
+            if hover is not None:
+                cursor = hover(page, pt)
+                if cursor is not None:
+                    self.viewport().setCursor(cursor)
+                    return
+            if self.tool is not None:
+                self.viewport().setCursor(Qt.CrossCursor)
+                return
             if page in self._pages and self._link_at(page, pt):
                 self.viewport().setCursor(Qt.PointingHandCursor)
                 ln = self._link_at(page, pt)
@@ -918,7 +993,16 @@ class PageCanvas(QAbstractScrollArea):
         moved = self._press_pos is not None and (pos - self._press_pos).manhattanLength() >= 4
         if self._drag_mode == "pan":
             self.viewport().setCursor(Qt.ArrowCursor)
-        if ev.button() == Qt.LeftButton and not moved and self._press_link is not None:
+        if self._drag_mode == "tool":
+            self._drag_mode = None
+            hit = self.widget_to_page(pos, clamp_page=self._tool_page)
+            release_hook = self._hook("on_release")
+            if hit is not None and release_hook is not None:
+                release_hook(hit[0], hit[1], moved)
+            self.viewport().update()
+            return
+        if (ev.button() == Qt.LeftButton and not moved and self._press_link is not None
+                and self.tool is None):
             link = self._press_link
             self._press_link = None
             self._drag_mode = None
@@ -926,6 +1010,9 @@ class PageCanvas(QAbstractScrollArea):
             return
         if self._drag_mode == "select" and self._sel_rects:
             self.selectionChanged.emit(self.selected_text)
+            sel_hook = self._hook("on_text_selected")
+            if sel_hook is not None and self.tool is not None:
+                sel_hook(self._sel_page, list(self._sel_rects))
         self._drag_mode = None
 
     def mouseDoubleClickEvent(self, ev) -> None:
@@ -933,6 +1020,9 @@ class PageCanvas(QAbstractScrollArea):
         if hit is None:
             return
         page, pt = hit
+        dbl_hook = self._hook("on_double")
+        if self.tool is not None and dbl_hook is not None and dbl_hook(page, pt):
+            return
         for r, text, *_ in self._page(page).words():
             if r.contains(pt):
                 self._sel_page = page

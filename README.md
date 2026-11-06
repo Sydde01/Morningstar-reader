@@ -5,7 +5,7 @@
 <h1 align="center">Morningstar Reader</h1>
 
 <p align="center">
-  A fast, <b>always-dark</b> PDF / EPUB / comic reader for Windows,<br>
+  A fast, <b>always-dark</b> PDF / EPUB / comic reader <b>and editor</b> for Windows,<br>
   with a library that keeps <b>your</b> folder structure.
 </p>
 
@@ -85,6 +85,54 @@ already have:
 |---|---|
 | ![Comic](docs/screenshots/cbz.png) | ![Settings](docs/screenshots/settings.png) |
 
+### Editing (Ctrl+E)
+Press **Edit** in a document's toolbar to open a second toolbar with editing tools:
+
+- **Fill in PDF forms.** Click a field to type, or tick checkboxes and pick list values. This works even outside
+  edit mode, and fields are highlighted.
+- **Add text** anywhere, for forms without fields. The text is a movable, editable annotation.
+- **Edit existing text.** Click a line, then change its wording, size, color or font. The old text is removed
+  and the new text is written with an embedded TrueType font, so €, œ and other accents work.
+- **Highlight, underline and strike out** text by selecting it.
+- **Draw** freehand, and add **rectangles, ellipses and arrows**, with a color and line width of your choice.
+- **Signature:** draw it once or load an image. It's kept for later and placed by clicking or dragging.
+- **Images:** insert, replace, extract, or delete them, on one page or on every page where the image appears.
+- **White-out** an area, or **redact** it in black. Both permanently remove the text and images underneath.
+- **Select an object** to move it (text boxes and shapes), restyle it, or delete it with the Del key.
+- **Organize pages:** reorder by drag & drop, rotate, delete, duplicate, add blank pages, insert other files
+  (PDF, EPUB, comics, images), **split double pages in two**, and extract a selection to a new PDF.
+- **Document menu:** compress on save, set or remove a **password** (AES-256), edit the title and author, and
+  flatten annotations and forms.
+- **Undo / redo** (Ctrl+Z / Ctrl+Y) for every change. An unsaved document shows **●** in its tab, and you're asked
+  before closing it.
+- **Save (Ctrl+S)** replaces the file and **keeps the original next to it as `name.pdf.bak`**. The first original
+  is never overwritten by later saves. **Save as** writes a copy instead. Use **Menu → Backups (.bak)** to restore
+  a backup or purge old ones.
+- **Comics (CBZ/CBR)** can be edited the same way (pages, drawings, images). They're saved back as CBZ, and
+  untouched pages keep their original JPEG/PNG files byte for byte. E-books (EPUB, MOBI, FB2) can't be edited
+  directly: the app offers to convert them to a new PDF and opens that one in edit mode.
+
+![Editing a PDF form](docs/screenshots/edit_mode.png)
+
+### Tools
+- **Split double pages.** Landscape pages are detected automatically, and you get a preview where you choose which
+  pages to cut. You can keep the cover whole and use right-to-left order for manga. The result is a **new file**
+  (`… (single pages).cbz/pdf`) and the original is never touched. You can cancel at any time before the end.
+  PDF pages are cut losslessly. It also works **in batch** on a whole folder (right-click it in the library).
+- **Convert** any supported format to **PDF**, **EPUB** or **CBZ**, one file, several files or a whole folder,
+  in the background with progress and cancel:
+  - **EPUB** can be *reflowable text* (for novels; keeps chapters and images) or *fixed layout* (one image per
+    page, for comics and scans). *Automatic* picks the right mode.
+  - **CBZ** keeps the original image of scanned / comic PDF pages when possible, and renders the other pages at
+    the DPI and JPEG quality you choose.
+  - **CBR** output needs WinRAR (`rar.exe`), because the RAR format can only be created by WinRAR. The option is
+    disabled when it's missing.
+- **Merge** several files (any format) into one PDF (with one bookmark per file) or one CBZ.
+
+| Split double pages | Organize pages |
+|---|---|
+| ![Split](docs/screenshots/split_dialog.png) | ![Pages](docs/screenshots/pages_dialog.png) |
+
 ## Download
 
 1. Grab `MorningstarReader-x.y.z-windows-x64.zip` from the
@@ -132,20 +180,32 @@ Need test files? `python tools/make_demo_library.py demo-library` creates a smal
 | `F11` / `F12` | Full screen / side panel |
 | `←` `→` `PgUp` `PgDn` `Space` `Home` `End` | Navigate |
 | `Alt+drag`, middle-drag | Pan |
+| `Ctrl+E` | Edit mode |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save (keeps a `.bak`) / save as |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
+| `Del` / `Esc` | Delete the selected object / back to the selection tool |
 
 ## Where is my data?
 
 | What | Where |
 |---|---|
 | Settings, library index, bookmarks, notes, reading positions | `%APPDATA%\MorningstarReader\` |
+| Saved signatures | `%APPDATA%\MorningstarReader\signatures\` |
 | Cover cache, converted CBR archives | `%LOCALAPPDATA%\MorningstarReader\` (can be cleared from the settings) |
+| Backups of edited files | next to each file, as `name.ext.bak` (listed in **Menu → Backups**) |
 
-Your documents are only ever **read**, never modified.
+Reading never modifies your documents. A file is only rewritten when you **save** it in edit mode, and the original
+is kept as `.bak` until you purge it.
 
 ## Limitations
 
 - DjVu, AZW3/KFX and DRM-protected e-books aren't supported (MuPDF limitation).
-- Notes and bookmarks are stored by the app, not written into the PDF.
+- Reading notes and bookmarks are stored by the app, not written into the PDF. Use edit mode to add real PDF
+  annotations.
+- Editing existing text works line by line and uses Arial, Times or Courier, which may differ slightly from the
+  document's own font.
+- XFA forms (an old Adobe format) and certificate-based digital signatures aren't supported.
+- No OCR for scanned documents yet.
 
 ## Project layout
 
@@ -157,6 +217,12 @@ morningstar/
   thumbs.py         cover generation in a process pool
   canvas.py         page viewport: layout, tiled rendering, zoom, selection, links
   viewer.py         document tab: toolbar, contents, bookmarks, notes, search
+  editor.py         edit mode: tools, forms, signature, undo/redo, save with .bak
+  pages_dialog.py   page organizer
+  tools_dialogs.py  convert / split double pages / merge / backups dialogs
+  convert.py        conversion, splitting and merging engine (runs in a worker process)
+  jobs.py           background process runner with progress and cancel
+  editing.py        saving helpers, .bak handling, fonts
   docbackend.py     MuPDF opening, CBR support, dark-page filter
   settings_dialog.py, theme.py, icons.py, i18n.py, translations_fr.py, db.py, config.py
 tools/              icon generator, demo-library generator

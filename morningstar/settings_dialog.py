@@ -35,6 +35,8 @@ SHORTCUTS = [
     ("Ctrl+C", "Copy selected text"), ("F11", "Full screen"), ("F12", "Side panel"),
     ("←/→, PgUp/PgDn, Space", "Navigate"), ("Home / End", "First / last page"),
     ("Alt+drag, middle-drag", "Pan the page"),
+    ("Ctrl+E", "Edit mode"), ("Ctrl+S / Ctrl+Shift+S", "Save / save as"),
+    ("Ctrl+Z / Ctrl+Y", "Undo / redo"), ("Del", "Delete the selected object"),
 ]
 
 

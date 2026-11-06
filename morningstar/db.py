@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS notes (
     updated  REAL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_path ON notes(path);
+
+CREATE TABLE IF NOT EXISTS backups (
+    bak      TEXT PRIMARY KEY,
+    original TEXT NOT NULL,
+    created  REAL,
+    size     INTEGER
+);
 """
 
 DOC_FIELDS = (
@@ -209,4 +216,36 @@ class Database:
 
     def delete_note(self, nid: int) -> None:
         self.con.execute("DELETE FROM notes WHERE id=?", (nid,))
+        self.con.commit()
+
+    # --------------------------------------------------------------- backups
+    def add_backup(self, bak: str, original: str) -> None:
+        try:
+            size = os.path.getsize(bak)
+        except OSError:
+            size = 0
+        self.con.execute("INSERT OR REPLACE INTO backups(bak, original, created, size) VALUES (?,?,?,?)",
+                         (bak, original, time.time(), size))
+        self.con.commit()
+
+    def backups(self) -> list[dict]:
+        rows = [dict(r) for r in self.con.execute("SELECT * FROM backups ORDER BY created DESC")]
+        missing = [r["bak"] for r in rows if not os.path.exists(r["bak"])]
+        if missing:
+            self.con.executemany("DELETE FROM backups WHERE bak=?", [(m,) for m in missing])
+            self.con.commit()
+        return [r for r in rows if r["bak"] not in missing]
+
+    def forget_backup(self, bak: str) -> None:
+        self.con.execute("DELETE FROM backups WHERE bak=?", (bak,))
+        self.con.commit()
+
+    def move_doc_state(self, old: str, new: str) -> None:
+        """Carry reading state, bookmarks and notes over to a renamed file (e.g. .cbr → .cbz)."""
+        self.con.execute("INSERT OR IGNORE INTO docs(path) VALUES (?)", (new,))
+        st = self.doc_state(old)
+        if st:
+            self.update_doc(new, **{k: st[k] for k in DOC_FIELDS if k in st})
+        self.con.execute("UPDATE bookmarks SET path=? WHERE path=?", (new, old))
+        self.con.execute("UPDATE notes SET path=? WHERE path=?", (new, old))
         self.con.commit()

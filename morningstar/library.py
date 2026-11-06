@@ -258,6 +258,7 @@ def _two_lines(text: str, fm: QFontMetrics, width: int) -> list[str]:
 class LibraryWidget(QWidget):
     openRequested = Signal(str)
     settingsRequested = Signal()
+    toolRequested = Signal(str, str)  # tool, path
 
     def __init__(self, db: Database, thumbs: ThumbnailManager, parent=None):
         super().__init__(parent)
@@ -686,8 +687,12 @@ class LibraryWidget(QWidget):
         if it.kind == "folder":
             m.addAction(icon("folder"), tr("Open"), lambda: self._on_activated(idx))
             root, d = it.key[1], it.key[2]
-            m.addAction(icon("explorer"), tr("Show in Explorer"),
-                        lambda: show_in_explorer(os.path.join(root, *d.split("/")) if d else root))
+            folder = os.path.join(root, *d.split("/")) if d else root
+            m.addAction(icon("explorer"), tr("Show in Explorer"), lambda: show_in_explorer(folder))
+            m.addSeparator()
+            m.addAction(icon("convert"), tr("Convert the folder…"), lambda: self.toolRequested.emit("convert_folder", folder))
+            m.addAction(icon("scissors"), tr("Split double pages in the folder…"),
+                        lambda: self.toolRequested.emit("split_folder", folder))
         else:
             m.addAction(icon("open"), tr("Open"), lambda: self.openRequested.emit(it.path))
             fav = it.path in self.favorites
@@ -696,6 +701,11 @@ class LibraryWidget(QWidget):
                         lambda: self.toggle_favorite(it.path))
             if self.current_key == ("recent",) and not self.search.text():
                 m.addAction(icon("close"), tr("Remove from recent"), lambda: self._remove_recent(it.path))
+            m.addSeparator()
+            m.addAction(icon("convert"), tr("Convert…"), lambda: self.toolRequested.emit("convert", it.path))
+            if it.entry and it.entry.ext in (".cbz", ".cbr", ".pdf"):
+                m.addAction(icon("scissors"), tr("Split double pages…"), lambda: self.toolRequested.emit("split", it.path))
+            m.addAction(icon("merge"), tr("Merge with other files…"), lambda: self.toolRequested.emit("merge", it.path))
             m.addSeparator()
             m.addAction(icon("explorer"), tr("Show in Explorer"), lambda: show_in_explorer(it.path))
             m.addAction(icon("copy"), tr("Copy path"), lambda: QGuiApplication.clipboard().setText(it.path))
@@ -716,8 +726,11 @@ class LibraryWidget(QWidget):
         m = QMenu(self)
         if key[0] == "dir":
             root, d = key[1], key[2]
-            m.addAction(icon("explorer"), tr("Show in Explorer"),
-                        lambda: show_in_explorer(os.path.join(root, *d.split("/")) if d else root))
+            folder = os.path.join(root, *d.split("/")) if d else root
+            m.addAction(icon("explorer"), tr("Show in Explorer"), lambda: show_in_explorer(folder))
+            m.addAction(icon("convert"), tr("Convert the folder…"), lambda: self.toolRequested.emit("convert_folder", folder))
+            m.addAction(icon("scissors"), tr("Split double pages in the folder…"),
+                        lambda: self.toolRequested.emit("split_folder", folder))
             if not d and root in self.roots():
                 m.addAction(icon("trash"), tr("Remove this folder from the library"),
                             lambda: self.remove_root(root))

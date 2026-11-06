@@ -196,7 +196,7 @@ def rar_cover(path: str) -> tuple[bytes, str, int]:
 
 # --------------------------------------------------------------------------- open
 def open_document(path: str, font_size: float | None = None,
-                  page_w: float = 480, page_h: float = 680) -> pymupdf.Document:
+                  page_w: float = 480, page_h: float = 680, password: str | None = None) -> pymupdf.Document:
     ext = ext_of(path)
     try:
         if ext == ".cbr":
@@ -209,7 +209,7 @@ def open_document(path: str, font_size: float | None = None,
         raise
     except Exception as e:  # noqa: BLE001 - MuPDF raises many kinds
         raise OpenError(str(e)) from e
-    if doc.needs_pass:
+    if doc.needs_pass and not (password and doc.authenticate(password)):
         raise OpenError("password_protected")
     if doc.is_reflowable and font_size:
         doc.layout(width=page_w, height=page_h, fontsize=font_size)

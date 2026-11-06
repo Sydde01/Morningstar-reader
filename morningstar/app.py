@@ -7,8 +7,8 @@ import sys
 from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QMainWindow, QMenu, QMessageBox,
-                               QTabBar, QTabWidget, QToolButton, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLineEdit, QMainWindow,
+                               QMenu, QMessageBox, QTabBar, QTabWidget, QToolButton, QWidget)
 
 from . import __app_name__, __version__, theme
 from .config import DOC_EXTS, settings
@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
 
         self.library = LibraryWidget(self.db, self.thumbs)
         self.library.openRequested.connect(self.open_path)
+        self.library.toolRequested.connect(self.run_tool)
         self.tabs.addTab(self.library, icon("library", theme.ACCENT), tr("Library"))
         self.tabs.tabBar().setTabButton(0, QTabBar.RightSide, None)
         self.tabs.tabBar().setTabButton(0, QTabBar.LeftSide, None)
@@ -62,6 +63,11 @@ class MainWindow(QMainWindow):
         self._add_action(m, "open", tr("Open a file…"), self.open_dialog, "Ctrl+O")
         self._add_action(m, "library", tr("Library"), lambda: self.tabs.setCurrentIndex(0), "Ctrl+L")
         self._add_action(m, "refresh", tr("Rescan library"), self.library.rescan, "F5")
+        m.addSeparator()
+        self._add_action(m, "convert", tr("Convert files…"), lambda: self.run_tool("convert", ""))
+        self._add_action(m, "merge", tr("Merge files…"), lambda: self.run_tool("merge", ""))
+        self._add_action(m, "scissors", tr("Split double pages…"), lambda: self.run_tool("split_pick", ""))
+        self._add_action(m, "backup", tr("Backups (.bak)…"), self.open_backups)
         m.addSeparator()
         self._add_action(m, "settings", tr("Settings"), self.open_settings, "Ctrl+,")
         self._add_action(m, "info", tr("About"), self.about)
@@ -107,7 +113,7 @@ class MainWindow(QMainWindow):
                 return i
         return -1
 
-    def open_path(self, path: str, focus: bool = True) -> None:
+    def open_path(self, path: str, focus: bool = True, edit: bool = False) -> None:
         path = norm_path(path)
         i = self.tab_for(path)
         if i >= 0:
@@ -118,15 +124,30 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, __app_name__, tr("File not found:\n{p}", p=path))
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
+        password = None
         try:
-            tab = DocumentTab(path, self.db)
+            while True:
+                try:
+                    tab = DocumentTab(path, self.db, password=password)
+                    break
+                except OpenError as e:
+                    if str(e) != "password_protected":
+                        raise
+                    QApplication.restoreOverrideCursor()
+                    pw, ok = QInputDialog.getText(
+                        self, __app_name__,
+                        (tr("Wrong password. Try again:") if password else
+                         tr("“{f}” is protected. Password:", f=os.path.basename(path))),
+                        QLineEdit.Password)
+                    if not ok:
+                        return
+                    password = pw
+                    QApplication.setOverrideCursor(Qt.WaitCursor)
         except OpenError as e:
             QApplication.restoreOverrideCursor()
             msg = str(e)
             if msg == "rar_tool_missing":
                 text = tr("This CBR file is a RAR archive. Install 7-Zip (7-zip.org) to read it.")
-            elif msg == "password_protected":
-                text = tr("This document is password protected.")
             else:
                 text = tr("Cannot open this document:\n{e}", e=msg)
             QMessageBox.warning(self, __app_name__, text)
@@ -139,6 +160,9 @@ class MainWindow(QMainWindow):
         tab.fullscreenRequested.connect(self.toggle_fullscreen)
         tab.favoritesChanged.connect(self.library.refresh_state)
         tab.stateSaved.connect(self._schedule_library_refresh)
+        tab.titleChanged.connect(lambda t, w=tab: self._retitle(w, t))
+        tab.toolRequested.connect(self.run_tool)
+        tab.fileSaved.connect(self._on_file_saved)
         ext = os.path.splitext(path)[1].lower()
         ic = {"pdf": "fit_page", "cbz": "tiles", "cbr": "tiles"}.get(ext[1:], "library")
         idx = self.tabs.addTab(tab, icon(ic, theme.TEXT_DIM), tab.title)
@@ -147,6 +171,8 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(idx)
             tab.canvas.setFocus()
         self.library.refresh_state()
+        if edit:
+            tab.toggle_edit()
 
     def _schedule_library_refresh(self) -> None:
         if not hasattr(self, "_lib_refresh"):
@@ -165,6 +191,10 @@ class MainWindow(QMainWindow):
         w = self.tabs.widget(index)
         if not isinstance(w, DocumentTab):
             return
+        if w.editor.dirty:
+            self.tabs.setCurrentIndex(index)
+            if not w.editor.ask_save():
+                return
         w.close_document()
         self.tabs.removeTab(index)
         w.deleteLater()
@@ -188,6 +218,91 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle(__app_name__)
             self.library.refresh_state()
+
+    # ------------------------------------------------------------- tools
+    def _retitle(self, tab, title: str) -> None:
+        i = self.tabs.indexOf(tab)
+        if i >= 0:
+            self.tabs.setTabText(i, title)
+            self.tabs.setTabToolTip(i, tab.path)
+            if i == self.tabs.currentIndex():
+                self.setWindowTitle(f"{title} — {__app_name__}")
+
+    def _pick_files(self, title: str) -> list[str]:
+        exts = " ".join(f"*{e}" for e in sorted(DOC_EXTS))
+        start = (settings.get("library.roots") or [os.path.expanduser("~")])[0]
+        files, _ = QFileDialog.getOpenFileNames(self, title, start, f"{tr('Documents')} ({exts})")
+        return files
+
+    def run_tool(self, tool: str, path: str) -> None:
+        from .tools_dialogs import (BatchSplitDialog, ConvertDialog, MergeDialog, SplitDialog,
+                                    collect_docs)
+
+        files = [path] if path else []
+        if tool == "split_pick":
+            files = self._pick_files(tr("Split double pages…"))
+            if not files:
+                return
+            tool = "split" if len(files) == 1 else "split_batch"
+        if tool in ("convert", "merge") and not files:
+            files = self._pick_files(tr("Convert files…") if tool == "convert" else tr("Merge files…"))
+            if not files:
+                return
+        if tool == "convert_folder":
+            files = collect_docs(path)
+            tool = "convert"
+        if tool == "split_folder":
+            files = [f for f in collect_docs(path) if os.path.splitext(f)[1].lower() in (".cbz", ".cbr", ".pdf")]
+            tool = "split_batch"
+        if tool == "edit_as_pdf":
+            self._edit_as_pdf(path)
+            return
+        dlg = {"convert": ConvertDialog, "merge": MergeDialog, "split": SplitDialog,
+               "split_batch": BatchSplitDialog}[tool]
+        d = dlg(files if tool != "split" else files[0], self)
+        d.filesCreated.connect(self._files_created)
+        d.exec()
+
+    def _edit_as_pdf(self, path: str) -> None:
+        from .convert import convert as do_convert
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            out = do_convert(path, "pdf", None, {"font_size": settings.get("reading.epub_font_size", 12) * 0.9},
+                             lambda *_: None, lambda: None)
+        except Exception as e:  # noqa: BLE001
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, __app_name__, tr("Cannot open this document:\n{e}", e=e))
+            return
+        QApplication.restoreOverrideCursor()
+        self._files_created([out])
+        self.open_path(out, edit=True)
+
+    def _files_created(self, paths: list[str]) -> None:
+        roots = [norm_path(r) for r in settings.get("library.roots", [])]
+        if any(norm_path(p).startswith(r) for p in paths for r in roots):
+            self.library.rescan()
+
+    def _on_file_saved(self, old: str, new: str) -> None:
+        for p in (old, new):
+            self.thumbs.forget(p)
+        self._files_created([new])
+        self.library.refresh_state()
+
+    def open_backups(self) -> None:
+        from .tools_dialogs import BackupsDialog
+
+        def before_restore(original: str) -> bool:
+            i = self.tab_for(norm_path(original))
+            if i >= 0:
+                tab = self.tabs.widget(i)
+                if tab.editor.dirty and not tab.editor.ask_save():
+                    return False
+                self.close_tab(i)
+            return True
+
+        BackupsDialog(self.db, before_restore, self).exec()
+        self.library.rescan()
 
     # --------------------------------------------------------- fullscreen
     def toggle_fullscreen(self) -> None:
@@ -266,6 +381,13 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(current)
 
     def closeEvent(self, ev) -> None:
+        for i in range(1, self.tabs.count()):
+            w = self.tabs.widget(i)
+            if isinstance(w, DocumentTab) and w.editor.dirty:
+                self.tabs.setCurrentIndex(i)
+                if not w.editor.ask_save():
+                    ev.ignore()
+                    return
         paths = []
         for i in range(1, self.tabs.count()):
             w = self.tabs.widget(i)

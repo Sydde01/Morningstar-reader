@@ -8,7 +8,7 @@ import pymupdf
 from PySide6.QtCore import QPoint, QPointF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIntValidator, QKeySequence
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel,
-                               QLineEdit, QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton, QSizePolicy,
+                               QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy,
                                QSplitter, QTabWidget, QToolBar, QToolButton, QTreeWidget, QTreeWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -54,10 +54,13 @@ class DocumentTab(QWidget):
     fullscreenRequested = Signal()
     favoritesChanged = Signal()
     stateSaved = Signal()
+    toolRequested = Signal(str, str)  # tool name, path
+    fileSaved = Signal(str, str)      # old path, new path
 
-    def __init__(self, path: str, db: Database, parent=None):
+    def __init__(self, path: str, db: Database, parent=None, password: str | None = None):
         super().__init__(parent)
         self.path = path
+        self.password = password
         self.db = db
         self.title = os.path.splitext(os.path.basename(path))[0]
         self.comic = is_comic(path)
@@ -66,7 +69,7 @@ class DocumentTab(QWidget):
         self.font_size = float(st.get("font_size") or settings.get("reading.epub_font_size", 12))
         self.doc = open_document(path, font_size=self.font_size if self.reflow else None,
                                  page_w=settings.get("reading.epub_page_width", 480),
-                                 page_h=settings.get("reading.epub_page_height", 680))
+                                 page_h=settings.get("reading.epub_page_height", 680), password=password)
         self.toc = []
         try:
             self.toc = self.doc.get_toc(simple=False)
@@ -81,6 +84,16 @@ class DocumentTab(QWidget):
 
         self.canvas = PageCanvas(self)
         self._build_ui()
+        from .editor import EditController
+
+        self.editor = EditController(self)
+        self.editor.dirtyChanged.connect(lambda _d: self.titleChanged.emit(self.display_title()))
+        self.editor.saved.connect(self.fileSaved.emit)
+        self._flash = QLabel(self.canvas)
+        self._flash.setStyleSheet(f"background: rgba(20,20,24,235); color: {theme.TEXT}; padding: 8px 14px;"
+                                  f"border: 1px solid {theme.ACCENT}; border-radius: 6px;")
+        self._flash.hide()
+        self._flash_timer = QTimer(self, singleShot=True, interval=3500, timeout=self._flash.hide)
         self._apply_initial_state(st)
         self.reload_marks()
         db.update_doc(path, page_count=self.doc.page_count, last_opened=time.time())
@@ -130,7 +143,7 @@ class DocumentTab(QWidget):
         self._act("zoom_out", tr("Zoom out"), lambda: self.canvas.zoom_step(-1), ["Ctrl+-"])
         self.zoom_box = QComboBox()
         self.zoom_box.setEditable(True)
-        self.zoom_box.setFixedWidth(96)
+        self.zoom_box.setFixedWidth(124)
         self.zoom_box.setInsertPolicy(QComboBox.NoInsert)
         for label, data in ((tr("Fit width"), "width"), (tr("Fit page"), "page")):
             self.zoom_box.addItem(label, data)
@@ -166,6 +179,18 @@ class DocumentTab(QWidget):
         self._act("note", tr("Add note"), self._add_note_toolbar, "Ctrl+Shift+N")
         self.a_fav = self._act("star", tr("Favorite"), self._toggle_favorite, checkable=True)
         self._act("fullscreen", tr("Full screen"), self.fullscreenRequested.emit, "F11")
+        self.tb.addSeparator()
+        self.a_edit = self._act("edit", tr("Edit (annotate, fill, sign, pages…)"), self.toggle_edit, "Ctrl+E",
+                                checkable=True)
+        tools_btn = QToolButton(icon=icon("tools"), toolTip=tr("Tools"))
+        tools_btn.setPopupMode(QToolButton.InstantPopup)
+        tm = QMenu(tools_btn)
+        tm.addAction(icon("pages"), tr("Organize pages…"), self.open_pages)
+        tm.addAction(icon("scissors"), tr("Split double pages…"), lambda: self.toolRequested.emit("split", self.path))
+        tm.addAction(icon("convert"), tr("Convert…"), lambda: self.toolRequested.emit("convert", self.path))
+        tm.addAction(icon("merge"), tr("Merge with other files…"), lambda: self.toolRequested.emit("merge", self.path))
+        tools_btn.setMenu(tm)
+        self.tb.addWidget(tools_btn)
         self._act("copy", tr("Copy"), self._copy_selection, "Ctrl+C", tb=False)
 
         spacer = QWidget()
@@ -352,6 +377,101 @@ class DocumentTab(QWidget):
             font_size=self.font_size if self.reflow else None)
         self.stateSaved.emit()
 
+    # ---------------------------------------------------------------- editing
+    def display_title(self) -> str:
+        return ("● " if self.editor.dirty else "") + self.title
+
+    def flash(self, text: str) -> None:
+        self._flash.setText(text)
+        self._flash.adjustSize()
+        self._flash.move((self.canvas.width() - self._flash.width()) // 2, self.canvas.height() - self._flash.height() - 24)
+        self._flash.show()
+        self._flash.raise_()
+        self._flash_timer.start()
+
+    def toggle_edit(self) -> None:
+        ed = self.editor
+        if ed.active:
+            if not ed.stop():
+                self.a_edit.setChecked(True)
+                return
+            self.a_edit.setChecked(False)
+            return
+        if not ed.can_edit():
+            self.a_edit.setChecked(False)
+            r = QMessageBox.question(
+                self, tr("Edit"),
+                tr("This format can't be edited directly. Convert it to a new PDF and edit that one?"))
+            if r == QMessageBox.Yes:
+                self.toolRequested.emit("edit_as_pdf", self.path)
+            return
+        ed.start()
+        self.a_edit.setChecked(True)
+        if self.comic:
+            self.flash(tr("Comic edit mode: pages are saved back as CBZ (a .bak copy is kept)."))
+
+    def open_pages(self) -> None:
+        if not self.editor.active:
+            if not self.editor.can_edit():
+                self.toggle_edit()
+                return
+            self.editor.start()
+            self.a_edit.setChecked(True)
+        from .pages_dialog import PagesDialog
+
+        dlg = PagesDialog(self.doc, self, rtl=self.canvas.rtl, title=self.title)
+        if dlg.exec() == QDialog.Accepted and dlg.result_doc is not None:
+            self.editor.replace_with(dlg.result_doc)
+
+    def on_document_replaced(self) -> None:
+        n = self.doc.page_count
+        self.page_total.setText(f" / {n} ")
+        self.page_edit.setValidator(QIntValidator(1, max(1, n)))
+        try:
+            self.toc = self.doc.get_toc(simple=False)
+        except Exception:  # noqa: BLE001
+            self.toc = []
+        self._fill_toc()
+        self._clear_search()
+        self.page_edit.setText(str(self.canvas.current_page + 1))
+
+    def release_file(self) -> None:
+        """Close the file handle (needed on Windows before the file can be replaced)."""
+        self.canvas.close_document()
+        try:
+            self.doc.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def reload_from(self, path: str) -> None:
+        page, frac = self.canvas.current_page, self.canvas.position_frac()
+        self.doc = open_document(path, font_size=self.font_size if self.reflow else None,
+                                 page_w=settings.get("reading.epub_page_width", 480),
+                                 page_h=settings.get("reading.epub_page_height", 680), password=self.password)
+        self.canvas.set_document(self.doc)
+        self.canvas.goto_page(min(page, self.doc.page_count - 1), frac)
+        self.on_document_replaced()
+
+    def reopen(self) -> None:
+        """Back to the file on disk (leaving edit mode or discarding changes)."""
+        if self.canvas.doc is not None:
+            self.canvas.close_document()
+        try:
+            self.doc.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.reload_from(self.path)
+        self.reload_marks()
+
+    def set_path(self, path: str) -> None:
+        if path == self.path:
+            self.titleChanged.emit(self.display_title())
+            return
+        self.path = path
+        self.title = os.path.splitext(os.path.basename(path))[0]
+        self.comic = is_comic(path)
+        self.titleChanged.emit(self.display_title())
+
     def close_document(self) -> None:
         self._search_timer.stop()
         self.save_state()
@@ -455,10 +575,14 @@ class DocumentTab(QWidget):
 
     def set_chrome_visible(self, on: bool) -> None:
         self.tb.setVisible(on)
+        if self.editor.toolbar is not None:
+            self.editor.toolbar.setVisible(on and self.editor.active)
         self.side.setVisible(on and self.a_sidebar.isChecked())
 
     def _escape(self) -> None:
-        if self.canvas.selected_text:
+        if self.editor.active and self.editor.tool != "select":
+            self.editor.set_tool("select")
+        elif self.canvas.selected_text:
             self.canvas.clear_selection()
         elif self.search_edit.hasFocus():
             self.canvas.setFocus()
@@ -535,6 +659,7 @@ class DocumentTab(QWidget):
         a.setChecked(self.canvas.dark)
         m.addAction(icon("rotate"), tr("Rotate"), lambda: self.canvas.set_rotation(self.canvas.rotation + 90))
         m.addAction(icon("fullscreen"), tr("Full screen"), self.fullscreenRequested.emit)
+        self.editor.extend_menu(m)
         m.exec(gpos)
 
     # -------------------------------------------------------- TOC
