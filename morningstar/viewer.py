@@ -195,6 +195,7 @@ class DocumentTab(QWidget):
         self.side = QTabWidget()
         self.side.setDocumentMode(True)
         self.side.setMinimumWidth(200)
+        self.side.tabBar().setDrawBase(False)
         self.side.tabBar().setUsesScrollButtons(False)
         self.side.tabBar().setExpanding(True)
         self.side.tabBar().setElideMode(Qt.ElideNone)

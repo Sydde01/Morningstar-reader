@@ -1,8 +1,11 @@
 """Mandatory dark theme (Fusion + palette + stylesheet)."""
 from __future__ import annotations
 
+import os
+
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 ACCENT = "#e0303f"
 ACCENT_HOVER = "#ff4655"
@@ -20,8 +23,10 @@ QWidget {{ color: {TEXT}; font-size: 10pt; }}
 QMainWindow, QDialog {{ background: {BG}; }}
 QToolTip {{ background: {PANEL}; color: {TEXT}; border: 1px solid {BORDER}; padding: 4px; }}
 
-QTabWidget::pane {{ border: none; }}
-QTabBar {{ background: {BG}; }}
+QTabWidget::pane {{ border: none; top: 0px; }}
+QTabWidget::tab-bar {{ top: 0px; }}
+QTabBar {{ background: {BG}; border: none; qproperty-drawBase: 0; }}
+QWidget#tabCorner {{ background: {BG}; }}
 QTabBar::tab {{
     background: {BG}; color: {TEXT_DIM}; padding: 7px 14px; border: none;
     border-bottom: 2px solid transparent; max-width: 260px;
@@ -98,7 +103,54 @@ QListWidget#settingsNav::item {{ padding: 9px 10px; }}
 """
 
 
+def _colorref(hex_color: str) -> int:
+    c = QColor(hex_color)
+    return c.red() | (c.green() << 8) | (c.blue() << 16)
+
+
+def set_dark_titlebar(widget: QWidget) -> None:
+    """Dark native title bar on Windows 10/11, even when the system theme is light."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        hwnd = ctypes.c_void_p(int(widget.winId()))
+        dwm = ctypes.windll.dwmapi
+
+        def setattr_(attr: int, value: int) -> int:
+            v = ctypes.c_int(value)
+            return dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), ctypes.sizeof(v))
+
+        # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 (Win10 20H1+ / Win11), 19 on older Win10 builds
+        if setattr_(20, 1) != 0:
+            setattr_(19, 1)
+        # Windows 11: exact caption / text / border colors (ignored on Windows 10)
+        setattr_(35, _colorref(BG))       # DWMWA_CAPTION_COLOR
+        setattr_(36, _colorref(TEXT))     # DWMWA_TEXT_COLOR
+        setattr_(34, _colorref(BORDER))   # DWMWA_BORDER_COLOR
+    except Exception:  # noqa: BLE001 - purely cosmetic
+        pass
+
+
+class _TitleBarFilter(QObject):
+    """Applies the dark title bar to every top-level window (main window, dialogs, message boxes)."""
+
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QEvent.Show, QEvent.WinIdChange) and isinstance(obj, QWidget) and obj.isWindow():
+            if not obj.property("_msr_dark_tb") or ev.type() == QEvent.WinIdChange:
+                obj.setProperty("_msr_dark_tb", True)
+                set_dark_titlebar(obj)
+        return False
+
+
 def apply_dark_theme(app: QApplication) -> None:
+    try:
+        app.styleHints().setColorScheme(Qt.ColorScheme.Dark)  # Qt >= 6.8
+    except AttributeError:
+        pass
+    app._msr_titlebar_filter = _TitleBarFilter(app)
+    app.installEventFilter(app._msr_titlebar_filter)
     app.setStyle("Fusion")
     pal = QPalette()
     c = QColor
