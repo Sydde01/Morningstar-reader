@@ -67,6 +67,7 @@ class MainWindow(QMainWindow):
         self._add_action(m, "convert", tr("Convert files…"), lambda: self.run_tool("convert", ""))
         self._add_action(m, "merge", tr("Merge files…"), lambda: self.run_tool("merge", ""))
         self._add_action(m, "scissors", tr("Split double pages…"), lambda: self.run_tool("split_pick", ""))
+        self._add_action(m, "search", tr("Make searchable (OCR)…"), lambda: self.run_tool("ocr", ""))
         self._add_action(m, "backup", tr("Backups (.bak)…"), self.open_backups)
         m.addSeparator()
         self._add_action(m, "settings", tr("Settings"), self.open_settings, "Ctrl+,")
@@ -162,6 +163,7 @@ class MainWindow(QMainWindow):
         tab.stateSaved.connect(self._schedule_library_refresh)
         tab.titleChanged.connect(lambda t, w=tab: self._retitle(w, t))
         tab.toolRequested.connect(self.run_tool)
+        tab.openRequested.connect(lambda p: (self._files_created([p]), self.open_path(p)))
         tab.fileSaved.connect(self._on_file_saved)
         ext = os.path.splitext(path)[1].lower()
         ic = {"pdf": "fit_page", "cbz": "tiles", "cbr": "tiles"}.get(ext[1:], "library")
@@ -244,8 +246,9 @@ class MainWindow(QMainWindow):
             if not files:
                 return
             tool = "split" if len(files) == 1 else "split_batch"
-        if tool in ("convert", "merge") and not files:
-            files = self._pick_files(tr("Convert files…") if tool == "convert" else tr("Merge files…"))
+        if tool in ("convert", "merge", "ocr") and not files:
+            files = self._pick_files({"convert": tr("Convert files…"), "merge": tr("Merge files…"),
+                                      "ocr": tr("Make searchable (OCR)…")}[tool])
             if not files:
                 return
         if tool == "convert_folder":
@@ -254,8 +257,18 @@ class MainWindow(QMainWindow):
         if tool == "split_folder":
             files = [f for f in collect_docs(path) if os.path.splitext(f)[1].lower() in (".cbz", ".cbr", ".pdf")]
             tool = "split_batch"
+        if tool == "ocr_folder":
+            files = [f for f in collect_docs(path) if os.path.splitext(f)[1].lower() in (".pdf", ".cbz", ".cbr")]
+            tool = "ocr"
         if tool == "edit_as_pdf":
             self._edit_as_pdf(path)
+            return
+        if tool == "ocr":
+            from .tools_dialogs import OcrDialog
+
+            d = OcrDialog(files, self.db, self._before_replace, self)
+            d.filesCreated.connect(self._files_created)
+            d.exec()
             return
         dlg = {"convert": ConvertDialog, "merge": MergeDialog, "split": SplitDialog,
                "split_batch": BatchSplitDialog}[tool]
@@ -289,19 +302,20 @@ class MainWindow(QMainWindow):
         self._files_created([new])
         self.library.refresh_state()
 
+    def _before_replace(self, original: str) -> bool:
+        """Close the tab showing `original` (it must be released before the file is replaced)."""
+        i = self.tab_for(norm_path(original))
+        if i >= 0:
+            tab = self.tabs.widget(i)
+            if tab.editor.dirty and not tab.editor.ask_save():
+                return False
+            self.close_tab(i)
+        return True
+
     def open_backups(self) -> None:
         from .tools_dialogs import BackupsDialog
 
-        def before_restore(original: str) -> bool:
-            i = self.tab_for(norm_path(original))
-            if i >= 0:
-                tab = self.tabs.widget(i)
-                if tab.editor.dirty and not tab.editor.ask_save():
-                    return False
-                self.close_tab(i)
-            return True
-
-        BackupsDialog(self.db, before_restore, self).exec()
+        BackupsDialog(self.db, self._before_replace, self).exec()
         self.library.rescan()
 
     # --------------------------------------------------------- fullscreen

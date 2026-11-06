@@ -616,6 +616,93 @@ def merge(files: list[str], dst: str, opts: dict, progress, cancel) -> str:
         raise
 
 
+# --------------------------------------------------------------------- OCR
+def tessdata_dir() -> str | None:
+    """Tesseract language data shipped with the app (MuPDF has the OCR engine built in)."""
+    import sys
+    cands = [os.environ.get("TESSDATA_PREFIX", "")]
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        cands.append(os.path.join(base, "assets", "tessdata"))
+    cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "tessdata"))
+    cands.append(r"C:\Program Files\Tesseract-OCR\tessdata")
+    for c in cands:
+        if c and os.path.isdir(c) and any(f.endswith(".traineddata") for f in os.listdir(c)):
+            return c
+    return None
+
+
+def ocr_languages() -> list[str]:
+    d = tessdata_dir()
+    if not d:
+        return []
+    return sorted(f[:-12] for f in os.listdir(d) if f.endswith(".traineddata") and f != "osd.traineddata")
+
+
+def ocr_output_path(src: str) -> str:
+    return unique_path(os.path.splitext(src)[0] + " (OCR).pdf")
+
+
+def ocr(src: str, dst: str, opts: dict, progress, cancel) -> str:
+    """Add an invisible, searchable / selectable text layer to scanned pages. Images are untouched."""
+    td = tessdata_dir()
+    if not td:
+        raise OpenError("tessdata_missing")
+    lang = opts.get("ocr_lang", "fra+eng")
+    dpi = int(opts.get("ocr_dpi", 300))
+    force = bool(opts.get("ocr_force", False))
+    if ext_of(src) == ".pdf":
+        doc = pymupdf.open(src)
+        if doc.needs_pass and not doc.authenticate(opts.get("password") or ""):
+            raise OpenError("password_protected")
+    else:
+        tmp = pymupdf.open(src, filetype="cbz") if is_comic_path(src) and not is_rar(src) else _open(src, opts)
+        if is_rar(src):
+            tmp = pymupdf.open(comic_zip(src), filetype="cbz")
+        doc = pymupdf.open("pdf", tmp.convert_to_pdf())
+        tmp.close()
+    font_path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Fonts", "arial.ttf")
+    font = pymupdf.Font(fontfile=font_path) if os.path.exists(font_path) else pymupdf.Font("helv")
+    n = doc.page_count
+    done = 0
+    for i in range(n):
+        cancel()
+        progress(i, n)
+        page = doc.load_page(i)
+        if not force and page.get_text("text").strip():
+            continue
+        tp = page.get_textpage_ocr(language=lang, dpi=dpi, full=True, tessdata=td)
+        words = page.get_text("words", textpage=tp)
+        if not words:
+            continue
+        tw = pymupdf.TextWriter(page.rect)
+        for x0, y0, x1, y1, text, *_ in words:
+            h = y1 - y0
+            if h <= 0 or not text.strip():
+                continue
+            fs = h * 0.88
+            natural = font.text_length(text, fontsize=fs)
+            if natural <= 0:
+                continue
+            # scale the font so the invisible word covers the visible one (accurate selection)
+            fs = min(fs * (x1 - x0) / natural, h * 1.6)
+            try:
+                tw.append((x0, y1 - h * 0.18), text, font=font, fontsize=fs)
+            except Exception:  # noqa: BLE001
+                continue
+        tw.write_text(page, render_mode=3)
+        done += 1
+    part = dst + ".part"
+    try:
+        doc.subset_fonts()
+    except Exception:  # noqa: BLE001
+        pass
+    doc.save(part, garbage=3, deflate=True)
+    doc.close()
+    os.replace(part, dst)
+    return dst
+
+
 # ---------------------------------------------------------------- job entry
 def run_job(kind: str, items: list, opts: dict, queue, cancel_event) -> None:
     """Worker-process entry point. Messages: (type, ...) tuples on `queue`."""
@@ -638,6 +725,14 @@ def run_job(kind: str, items: list, opts: dict, queue, cancel_event) -> None:
                 out = split_doubles(src, split_output_path(src), pages, opts.get("rtl", False), progress, cancel)
             elif kind == "merge":
                 out = merge(item[0], item[1], opts, progress, cancel)
+            elif kind == "ocr":
+                dst = opts.get("dst_for", {}).get(item) or ocr_output_path(item)
+                try:
+                    out = ocr(item, dst, opts, progress, cancel)
+                except BaseException:
+                    if os.path.exists(dst + ".part"):
+                        os.remove(dst + ".part")
+                    raise
             elif kind == "analyze":
                 cancel()
                 sizes = page_sizes(item)

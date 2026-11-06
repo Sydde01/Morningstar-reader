@@ -90,6 +90,10 @@ QMenu::icon {{ padding-left: 6px; }}
 QCheckBox::indicator, QRadioButton::indicator {{ width: 15px; height: 15px; }}
 QCheckBox::indicator {{ border: 1px solid #555; border-radius: 3px; background: {BG}; }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url(:/check.svg); }}
+QRadioButton::indicator {{ border: 1px solid #666; border-radius: 8px; background: {BG}; }}
+QRadioButton::indicator:hover {{ border-color: {ACCENT}; }}
+QRadioButton::indicator:checked {{ border: 1px solid {ACCENT}; background: qradialgradient(cx:0.5, cy:0.5,
+    radius:0.5, fx:0.5, fy:0.5, stop:0 {ACCENT}, stop:0.55 {ACCENT}, stop:0.62 {BG}, stop:1 {BG}); }}
 QGroupBox {{ border: 1px solid {BORDER}; border-radius: 6px; margin-top: 14px; padding: 10px 8px 8px 8px; }}
 QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {TEXT_DIM}; }}
 QProgressBar {{ background: {BG}; border: none; border-radius: 3px; height: 6px; text-align: center; }}

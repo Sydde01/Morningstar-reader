@@ -123,3 +123,27 @@ def restore_backup(bak: str, original: str) -> None:
     if os.path.exists(original):
         os.remove(original)
     os.replace(bak, original)
+
+
+def insert_words(page: pymupdf.Page, origin, text: str, fontsize: float, color, *,
+                 fontfile: str | None = None, fontbuffer: bytes | None = None) -> None:
+    """Write `text` at `origin` word by word with an embedded font.
+
+    Placing words individually (instead of writing space glyphs) keeps text extraction and search
+    correct: TrueType fonts often map their space glyph to U+00A0, which breaks searching."""
+    if fontbuffer is not None:
+        font = pymupdf.Font(fontbuffer=fontbuffer)
+    elif fontfile:
+        font = pymupdf.Font(fontfile=fontfile)
+    else:
+        font = pymupdf.Font("helv")
+    tw = pymupdf.TextWriter(page.rect, color=color)
+    x, y = origin.x, origin.y
+    space = font.text_length(" ", fontsize=fontsize) or fontsize * 0.25
+    for i, word in enumerate(text.split(" ")):
+        if word:
+            tw.append((x, y), word, font=font, fontsize=fontsize)
+            x += font.text_length(word, fontsize=fontsize)
+        if i < len(text.split(" ")) - 1:
+            x += space
+    tw.write_text(page)

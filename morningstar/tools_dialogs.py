@@ -293,6 +293,115 @@ class ConvertDialog(_JobDialog):
         self.open_btn.setVisible(len(self.created) == 1)
 
 
+# ============================================================================== OCR
+class OcrDialog(_JobDialog):
+    """Add a searchable text layer to scanned PDFs / comics (new file, or replace the PDF keeping a .bak)."""
+
+    def __init__(self, files: list[str], db: Database, before_replace=None, parent=None):
+        super().__init__(parent)
+        self.db = db
+        self.before_replace = before_replace
+        self.setWindowTitle(tr("Make searchable (OCR)"))
+        self.resize(640, 520)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(tr("Text recognition adds an invisible text layer to scanned pages: you can then "
+                                "search, select and copy the text. The page images are not changed."),
+                             objectName="dim", wordWrap=True))
+        self.files = _file_list(files)
+        lay.addWidget(self.files, 1)
+        row = QHBoxLayout()
+        b = QPushButton(icon("open"), tr("Add files…"))
+        b.clicked.connect(self._add)
+        row.addWidget(b)
+        b = QPushButton(icon("trash"), tr("Remove"))
+        b.clicked.connect(lambda: [self.files.takeItem(self.files.row(i)) for i in self.files.selectedItems()])
+        row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
+        form = QFormLayout()
+        self.lang = QComboBox()
+        langs = convert.ocr_languages()
+        names = {"fra": tr("French"), "eng": tr("English")}
+        if "fra" in langs and "eng" in langs:
+            self.lang.addItem(tr("French + English"), "fra+eng")
+        for code in langs:
+            self.lang.addItem(names.get(code, code), code)
+        form.addRow(tr("Language"), self.lang)
+        self.quality = QComboBox()
+        self.quality.addItem(tr("Accurate (300 dpi)"), 300)
+        self.quality.addItem(tr("Fast (200 dpi)"), 200)
+        form.addRow(tr("Recognition"), self.quality)
+        self.force = QCheckBox(tr("Also process pages that already contain text"))
+        form.addRow("", self.force)
+        orow = QHBoxLayout()
+        self.new_file = QRadioButton(tr("Create a new “(OCR)” PDF"))
+        self.new_file.setChecked(True)
+        self.replace = QRadioButton(tr("Replace the PDF (a .bak copy is kept)"))
+        orow.addWidget(self.new_file)
+        orow.addWidget(self.replace)
+        form.addRow(tr("Output"), orow)
+        lay.addLayout(form)
+        if not langs:
+            lay.addWidget(QLabel(tr("OCR language data not found."), objectName="dim"))
+        self._bottom(lay, tr("Start"))
+        self.ok_btn.setEnabled(bool(langs))
+        self.open_btn.clicked.connect(lambda: self.created and self.parent() and
+                                      getattr(self.parent(), "open_path", lambda *_: None)(self.created[0]))
+
+    def _add(self) -> None:
+        files, _ = QFileDialog.getOpenFileNames(self, tr("Add files…"), "", "PDF / Comics (*.pdf *.cbz *.cbr)")
+        for f in files:
+            it = QListWidgetItem(icon("fit_page", theme.TEXT_DIM), os.path.basename(f))
+            it.setData(Qt.UserRole, f)
+            it.setToolTip(f)
+            self.files.addItem(it)
+
+    def _set_inputs_enabled(self, on: bool) -> None:
+        for w in (self.files, self.lang, self.quality, self.force, self.new_file, self.replace):
+            w.setEnabled(on)
+
+    def _start(self) -> None:
+        files = _paths(self.files)
+        if not files:
+            return
+        self._files = files
+        self._replace = self.replace.isChecked()
+        dst_for = {}
+        if self._replace:
+            dst_for = {f: f + ".ocr-new.pdf" for f in files if f.lower().endswith(".pdf")}
+        self._run("ocr", files, {"ocr_lang": self.lang.currentData(), "ocr_dpi": self.quality.currentData(),
+                                 "ocr_force": self.force.isChecked(), "dst_for": dst_for})
+
+    def _item_done(self, idx: int, out: str) -> None:
+        src = self._files[idx]
+        if out.endswith(".ocr-new.pdf"):
+            if self.before_replace is None or self.before_replace(src):
+                bak = editing.replace_with_backup(out, src)
+                if bak:
+                    self.db.add_backup(bak, src)
+                out = src
+            else:
+                final = convert.ocr_output_path(src)
+                os.replace(out, final)
+                out = final
+        super()._item_done(idx, out)
+        it = self.files.item(idx)
+        if it is not None:
+            it.setIcon(icon("check", "#3d9970"))
+            it.setText(f"{os.path.basename(src)}  →  {os.path.basename(out)}")
+
+    def _item_error(self, idx: int, msg: str) -> None:
+        super()._item_error(idx, msg)
+        it = self.files.item(idx)
+        if it is not None:
+            it.setIcon(icon("close", theme.ACCENT))
+            it.setToolTip(msg)
+
+    def _finished(self, ok: bool) -> None:
+        super()._finished(ok)
+        self.open_btn.setVisible(len(self.created) == 1)
+
+
 # =========================================================================== split
 class SplitDialog(_JobDialog):
     """Preview double pages of one file, choose which ones to split, then create a new file."""

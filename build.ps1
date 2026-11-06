@@ -1,5 +1,6 @@
 # Build a standalone Windows version in dist\MorningstarReader (+ a zip for releases).
-# Usage:  powershell -ExecutionPolicy Bypass -File build.ps1
+# Usage:  powershell -ExecutionPolicy Bypass -File build.ps1 [-Dist <output folder>]
+param([string]$Dist = "dist")
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
@@ -12,11 +13,15 @@ if (-not (Test-Path assets\icon.ico)) { & $py tools\make_icons.py }
 
 $version = (& $py -c "import morningstar; print(morningstar.__version__)").Trim()
 
-& $py -m PyInstaller --noconfirm --clean --windowed `
+& $py -m PyInstaller --noconfirm --clean --windowed --distpath $Dist `
     --name MorningstarReader `
     --icon assets\icon.ico `
     --add-data "assets\icon.ico;assets" `
     --add-data "assets\icon.png;assets" `
+    --add-data "assets\tessdata\*.traineddata;assets\tessdata" `
+    --collect-data pyhanko `
+    --collect-data pyhanko_certvalidator `
+    --collect-data tzdata `
     --exclude-module tkinter `
     --exclude-module numpy `
     --exclude-module PIL `
@@ -27,7 +32,7 @@ $version = (& $py -c "import morningstar; print(morningstar.__version__)").Trim(
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 # Drop Qt parts a widgets-only app never loads (keeps the download small).
-$internal = "dist\MorningstarReader\_internal\PySide6"
+$internal = "$Dist\MorningstarReader\_internal\PySide6"
 $junk = @("opengl32sw.dll", "Qt6Quick.dll", "Qt6Qml.dll", "Qt6QmlModels.dll", "Qt6QmlMeta.dll",
           "Qt6QmlWorkerScript.dll", "Qt6Pdf.dll", "Qt6VirtualKeyboard.dll", "Qt6OpenGL.dll",
           "plugins\imageformats\qpdf.dll", "plugins\platforminputcontexts")
@@ -38,6 +43,6 @@ foreach ($j in $junk) {
 Get-ChildItem "$internal\translations" -Filter *.qm -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -notmatch "_(fr|en)\.qm$" } | Remove-Item -Force
 
-$zip = "dist\MorningstarReader-$version-windows-x64.zip"
-& $py -c "import shutil,sys; shutil.make_archive(sys.argv[1][:-4], 'zip', 'dist', 'MorningstarReader')" $zip
+$zip = "$Dist\MorningstarReader-$version-windows-x64.zip"
+& $py -c "import shutil,sys; shutil.make_archive(sys.argv[1][:-4], 'zip', sys.argv[2], 'MorningstarReader')" $zip $Dist
 Write-Host "Built $zip"

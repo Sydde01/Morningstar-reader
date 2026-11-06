@@ -693,6 +693,8 @@ class LibraryWidget(QWidget):
             m.addAction(icon("convert"), tr("Convert the folder…"), lambda: self.toolRequested.emit("convert_folder", folder))
             m.addAction(icon("scissors"), tr("Split double pages in the folder…"),
                         lambda: self.toolRequested.emit("split_folder", folder))
+            m.addAction(icon("search"), tr("Make the folder searchable (OCR)…"),
+                        lambda: self.toolRequested.emit("ocr_folder", folder))
         else:
             m.addAction(icon("open"), tr("Open"), lambda: self.openRequested.emit(it.path))
             fav = it.path in self.favorites
@@ -706,6 +708,8 @@ class LibraryWidget(QWidget):
             if it.entry and it.entry.ext in (".cbz", ".cbr", ".pdf"):
                 m.addAction(icon("scissors"), tr("Split double pages…"), lambda: self.toolRequested.emit("split", it.path))
             m.addAction(icon("merge"), tr("Merge with other files…"), lambda: self.toolRequested.emit("merge", it.path))
+            if it.entry and it.entry.ext in (".cbz", ".cbr", ".pdf"):
+                m.addAction(icon("search"), tr("Make searchable (OCR)…"), lambda: self.toolRequested.emit("ocr", it.path))
             m.addSeparator()
             m.addAction(icon("explorer"), tr("Show in Explorer"), lambda: show_in_explorer(it.path))
             m.addAction(icon("copy"), tr("Copy path"), lambda: QGuiApplication.clipboard().setText(it.path))
@@ -731,6 +735,8 @@ class LibraryWidget(QWidget):
             m.addAction(icon("convert"), tr("Convert the folder…"), lambda: self.toolRequested.emit("convert_folder", folder))
             m.addAction(icon("scissors"), tr("Split double pages in the folder…"),
                         lambda: self.toolRequested.emit("split_folder", folder))
+            m.addAction(icon("search"), tr("Make the folder searchable (OCR)…"),
+                        lambda: self.toolRequested.emit("ocr_folder", folder))
             if not d and root in self.roots():
                 m.addAction(icon("trash"), tr("Remove this folder from the library"),
                             lambda: self.remove_root(root))

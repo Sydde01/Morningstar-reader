@@ -53,6 +53,8 @@ already have:
 - The interface is **always dark**.
 - **Dark document mode** (moon button / Ctrl+D) turns white pages dark and black text light, which is ideal for
   PDF books. It's toggled per document and remembered.
+- Annotations stay readable: colored drawings, arrows and highlights **keep their colors**, while black pen
+  strokes, text boxes and form fields turn light.
 - In the settings you can choose the background and text colors (with presets such as *Soft dark*,
   *Pure black (OLED)*, *Sepia night* and *Hellfire*), and whether **pictures keep their original colors**.
   Scanned pages are still inverted. You can also enable dark mode by default for PDFs, e-books or comics.
@@ -91,8 +93,10 @@ Press **Edit** in a document's toolbar to open a second toolbar with editing too
 - **Fill in PDF forms.** Click a field to type, or tick checkboxes and pick list values. This works even outside
   edit mode, and fields are highlighted.
 - **Add text** anywhere, for forms without fields. The text is a movable, editable annotation.
-- **Edit existing text.** Click a line, then change its wording, size, color or font. The old text is removed
-  and the new text is written with an embedded TrueType font, so €, œ and other accents work.
+- **Edit existing text.** Click a line, then change its wording, size, color, bold / italic and **font**. You can
+  pick **any font installed on Windows** (searchable list with a live preview), or **the document's own font**
+  when it's embedded and contains every character you need. The font is embedded in the PDF, €, œ and other
+  accents work, and the new text stays searchable.
 - **Highlight, underline and strike out** text by selecting it.
 - **Draw** freehand, and add **rectangles, ellipses and arrows**, with a color and line width of your choice.
 - **Signature:** draw it once or load an image. It's kept for later and placed by clicking or dragging.
@@ -128,6 +132,22 @@ Press **Edit** in a document's toolbar to open a second toolbar with editing too
   - **CBR** output needs WinRAR (`rar.exe`), because the RAR format can only be created by WinRAR. The option is
     disabled when it's missing.
 - **Merge** several files (any format) into one PDF (with one bookmark per file) or one CBZ.
+- **Make searchable (OCR).** Text recognition (French and English, other languages can be added) adds an
+  invisible text layer to scanned PDFs and comics. You can then search, select and copy their text, and the page
+  images are untouched. It writes a new “(OCR)” PDF, or replaces the PDF and keeps a `.bak`. It works on files and
+  whole folders, and uses the Tesseract engine built into MuPDF, so there's nothing to install.
+- **Digital signatures (certificates).**
+  - Sign a PDF with your **.pfx / .p12 certificate**, or create a **personal certificate** in one click.
+  - The signature can be visible (drag its area on the page, optionally with your handwritten signature) or
+    invisible. You can add a reason and a location.
+  - The signature goes into a new “(signed)” file, or into the file itself with a `.bak` copy. Existing signatures
+    are preserved, so several people can sign.
+  - **Verify signatures:** see who signed and when, whether the document is intact, whether the identity chains
+    to an authority trusted by Windows, and whether it was changed after signing.
+
+| Digital signatures | OCR |
+|---|---|
+| ![Signatures](docs/screenshots/signatures_dialog.png) | ![OCR](docs/screenshots/ocr_dialog.png) |
 
 | Split double pages | Organize pages |
 |---|---|
@@ -190,7 +210,7 @@ Need test files? `python tools/make_demo_library.py demo-library` creates a smal
 | What | Where |
 |---|---|
 | Settings, library index, bookmarks, notes, reading positions | `%APPDATA%\MorningstarReader\` |
-| Saved signatures | `%APPDATA%\MorningstarReader\signatures\` |
+| Saved handwritten signatures, certificates | `%APPDATA%\MorningstarReader\signatures\`, `...\certificates\` |
 | Cover cache, converted CBR archives | `%LOCALAPPDATA%\MorningstarReader\` (can be cleared from the settings) |
 | Backups of edited files | next to each file, as `name.ext.bak` (listed in **Menu → Backups**) |
 
@@ -202,10 +222,12 @@ is kept as `.bak` until you purge it.
 - DjVu, AZW3/KFX and DRM-protected e-books aren't supported (MuPDF limitation).
 - Reading notes and bookmarks are stored by the app, not written into the PDF. Use edit mode to add real PDF
   annotations.
-- Editing existing text works line by line and uses Arial, Times or Courier, which may differ slightly from the
-  document's own font.
-- XFA forms (an old Adobe format) and certificate-based digital signatures aren't supported.
-- No OCR for scanned documents yet.
+- Editing existing text works line by line. The document's own font can only be reused when it's embedded and
+  contains the new characters (fonts are often subsets); otherwise the closest installed font is used.
+- XFA forms (an old Adobe format) aren't supported.
+- Signing uses certificate files (.pfx / .p12). Smart cards and tokens (Windows certificate store) aren't
+  supported yet. A personal certificate is cryptographically valid but shows as “unknown identity” in other
+  readers.
 
 ## Project layout
 
@@ -222,7 +244,10 @@ morningstar/
   tools_dialogs.py  convert / split double pages / merge / backups dialogs
   convert.py        conversion, splitting and merging engine (runs in a worker process)
   jobs.py           background process runner with progress and cancel
-  editing.py        saving helpers, .bak handling, fonts
+  editing.py        saving helpers, .bak handling, text insertion
+  fonts.py          installed Windows fonts, document fonts
+  signing.py        certificates, signing and verification (pyHanko)
+  signing_dialogs.py
   docbackend.py     MuPDF opening, CBR support, dark-page filter
   settings_dialog.py, theme.py, icons.py, i18n.py, translations_fr.py, db.py, config.py
 tools/              icon generator, demo-library generator
@@ -236,5 +261,6 @@ with `python tools/make_icons.py --choose N`.
 
 ## License
 
-[AGPL-3.0](LICENSE). Morningstar Reader is built on [PyMuPDF / MuPDF](https://github.com/pymupdf/PyMuPDF) (AGPL)
-and [Qt for Python (PySide6)](https://doc.qt.io/qtforpython/) (LGPL).
+[AGPL-3.0](LICENSE). Morningstar Reader is built on [PyMuPDF / MuPDF](https://github.com/pymupdf/PyMuPDF) (AGPL),
+[Qt for Python (PySide6)](https://doc.qt.io/qtforpython/) (LGPL) and [pyHanko](https://github.com/MatthiasValvekens/pyHanko)
+(MIT). The OCR language data comes from [tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) (Apache-2.0).

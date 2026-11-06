@@ -8,3 +8,4 @@ demo-library/
 .vscode/
 .idea/
 *.log
+dist-*/

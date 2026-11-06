@@ -199,37 +199,67 @@ class SignatureDialog(QDialog):
 
 
 class TextEditDialog(QDialog):
-    def __init__(self, parent, text: str, size: float, color: str, family: str, bold: bool, italic: bool):
+    """Edit one line of text: wording, font (any installed font or the document's own), size, style, color."""
+    ORIGINAL = "__original__"
+
+    def __init__(self, parent, text: str, size: float, color: str, family: str, bold: bool, italic: bool,
+                 original: str | None = None):
         super().__init__(parent)
+        from .fonts import installed_families
+
         self.setWindowTitle(tr("Edit text"))
-        self.resize(520, 200)
+        self.resize(640, 300)
         form = QFormLayout(self)
         self.text = QLineEdit(text)
+        self.text.textChanged.connect(self._preview)
         form.addRow(tr("Text"), self.text)
+
+        self.font = QComboBox()
+        self.font.setEditable(True)
+        self.font.setInsertPolicy(QComboBox.NoInsert)
+        self.font.setMaxVisibleItems(18)
+        if original:
+            self.font.addItem(tr("Document font ({f})", f=original), self.ORIGINAL)
+        for fam in installed_families():
+            self.font.addItem(fam, fam)
+            self.font.setItemData(self.font.count() - 1, QFont(fam, 10), Qt.FontRole)
+        idx = 0 if original else max(0, self.font.findData(family))
+        self.font.setCurrentIndex(idx)
+        self.font.completer().setCompletionMode(self.font.completer().CompletionMode.PopupCompletion)
+        self.font.completer().setFilterMode(Qt.MatchContains)
+        self.font.currentIndexChanged.connect(self._preview)
+        self.fallback_family = family
+        form.addRow(tr("Font"), self.font)
+
         row = QHBoxLayout()
-        self.family = QComboBox()
-        for k, label in (("sans", "Sans-serif (Arial)"), ("serif", "Serif (Times)"), ("mono", "Mono (Courier)")):
-            self.family.addItem(label, k)
-        self.family.setCurrentIndex(max(0, self.family.findData(family)))
-        row.addWidget(self.family)
         self.size = QDoubleSpinBox()
         self.size.setRange(4, 120)
         self.size.setValue(size)
         self.size.setSuffix(" pt")
+        self.size.valueChanged.connect(self._preview)
         row.addWidget(self.size)
         self.bold = QCheckBox(tr("Bold"))
         self.bold.setChecked(bold)
         self.italic = QCheckBox(tr("Italic"))
         self.italic.setChecked(italic)
-        row.addWidget(self.bold)
-        row.addWidget(self.italic)
+        for cb in (self.bold, self.italic):
+            cb.toggled.connect(self._preview)
+            row.addWidget(cb)
         self.color = color
         self.color_btn = QPushButton()
         self.color_btn.setFixedWidth(60)
         self._paint_color()
         self.color_btn.clicked.connect(self._pick)
         row.addWidget(self.color_btn)
+        row.addStretch(1)
         form.addRow(tr("Style"), row)
+
+        self.preview = QLabel()
+        self.preview.setMinimumHeight(56)
+        self.preview.setStyleSheet("background: white; padding: 8px; border-radius: 4px;")
+        form.addRow(tr("Preview"), self.preview)
+        self.warn = QLabel(objectName="dim", wordWrap=True)
+        form.addRow("", self.warn)
         form.addRow("", QLabel(tr("Leave empty to delete the line."), objectName="dim"))
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText(tr("Apply"))
@@ -238,6 +268,29 @@ class TextEditDialog(QDialog):
         bb.rejected.connect(self.reject)
         form.addRow(bb)
         self.text.selectAll()
+        self._preview()
+
+    def family(self) -> str:
+        data = self.font.currentData()
+        if data:
+            return data
+        typed = self.font.currentText().strip()
+        idx = self.font.findText(typed, Qt.MatchFixedString)
+        return self.font.itemData(idx) if idx >= 0 else self.fallback_family
+
+    def _preview(self) -> None:
+        fam = self.family()
+        f = QFont(self.fallback_family if fam == self.ORIGINAL else fam)
+        f.setPointSizeF(max(6.0, min(40.0, self.size.value())))
+        f.setBold(self.bold.isChecked())
+        f.setItalic(self.italic.isChecked())
+        self.preview.setFont(f)
+        self.preview.setText(self.text.text() or " ")
+        pal = self.preview.palette()
+        self.preview.setStyleSheet(f"background: white; color: {self.color}; padding: 8px; border-radius: 4px;")
+        del pal
+        self.warn.setText(tr("The document font is often a subset: if a character is missing, "
+                             "the closest installed font is used instead.") if fam == self.ORIGINAL else "")
 
     def _paint_color(self) -> None:
         self.color_btn.setStyleSheet(f"QPushButton {{ background: {self.color}; border: 1px solid #555; }}")
@@ -247,6 +300,7 @@ class TextEditDialog(QDialog):
         if c.isValid():
             self.color = c.name()
             self._paint_color()
+            self._preview()
 
 
 class MetadataDialog(QDialog):
@@ -456,6 +510,13 @@ class EditController(QObject):
         if self.active:
             return True
         if self.doc.is_pdf:
+            from .signing import has_signatures
+
+            if has_signatures(self.doc) and QMessageBox.question(
+                    self.tab, tr("Edit"),
+                    tr("This document is digitally signed: saving changes will invalidate its signatures. "
+                       "Continue?")) != QMessageBox.Yes:
+                return False
             self.kind = "pdf"
         elif self.tab.comic:
             self.kind = "comic"
@@ -617,6 +678,25 @@ class EditController(QObject):
         self.a_undo.setEnabled(bool(self.undo_stack))
         self.a_redo.setEnabled(bool(self.redo_stack))
         self.a_save.setEnabled(self.dirty)
+
+    def begin_pick_rect(self, callback, hint: str) -> None:
+        """Let the user drag an area on a page (used to place a digital signature)."""
+        self._commit_inline()
+        self._pick_cb = callback
+        self._prev_tool = self.tool if self.active else None
+        self.tool = "pickrect"
+        self.canvas.tool = "pickrect"
+        self.canvas.clear_selection()
+        self.tab.flash(hint)
+
+    def _end_pick(self) -> None:
+        self._pick_cb = None
+        if self.active:
+            self.set_tool(self._prev_tool or "select")
+        else:
+            self.tool = "select"
+            self.canvas.tool = None
+        self.canvas.viewport().update()
 
     def set_tool(self, tool: str) -> None:
         self._commit_inline()
@@ -782,7 +862,7 @@ class EditController(QObject):
             if hit:
                 self._edit_line(pno, hit)
             return "done"
-        if t in DRAG_TOOLS:
+        if t in DRAG_TOOLS or t == "pickrect":
             self._drag_start = pt
             self._drag_cur = pt
             self._stroke = [pt]
@@ -810,6 +890,14 @@ class EditController(QObject):
                 self._add_ink(pno, pts)
             return
         rect = pymupdf.Rect(start, pt).normalize()
+        if t == "pickrect":
+            if not moved or rect.width < 20 or rect.height < 10:
+                rect = pymupdf.Rect(pt.x - 110, pt.y - 30, pt.x + 110, pt.y + 30)
+            cb = self._pick_cb
+            self._end_pick()
+            if cb is not None:
+                cb(pno, rect)
+            return
         if t == "place":
             if not moved or rect.width < 8:
                 rect = self._default_place_rect(pno, pt)
@@ -833,6 +921,9 @@ class EditController(QObject):
         return False
 
     def on_key(self, ev) -> bool:
+        if self.tool == "pickrect" and ev.key() == Qt.Key_Escape:
+            self._end_pick()
+            return True
         if not self.active:
             return False
         if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self._sel:
@@ -863,7 +954,7 @@ class EditController(QObject):
                 q = c.page_to_widget_rect(pno, r)
                 if q is not None:
                     p.drawRect(q)
-        if not self.active:
+        if not self.active and self.tool != "pickrect":
             return
         if self._hover and self._hover[0] == pno and (not self._sel or self._sel["rect"] != self._hover[1]):
             q = c.page_to_widget_rect(pno, self._hover[1])
@@ -916,7 +1007,7 @@ class EditController(QObject):
                 p.setPen(Qt.NoPen)
                 p.setBrush(QColor(0, 0, 0, 200))
                 p.drawRect(rect)
-            elif t == "place":
+            elif t in ("place", "pickrect"):
                 p.setPen(QPen(QColor(theme.ACCENT), 1, Qt.DashLine))
                 p.setBrush(QColor(224, 48, 63, 30))
                 p.drawRect(rect)
@@ -1154,15 +1245,25 @@ class EditController(QObject):
 
     # existing text -----------------------------------------------------------
     def _edit_line(self, pno: int, hit: dict) -> None:
+        from . import fonts
+
         ln = hit["line"]
         spans = [s for s in ln["spans"] if s["text"].strip()] or ln["spans"]
         text = "".join(s["text"] for s in ln["spans"]).strip()
         s0 = spans[0]
         family, bold, italic = editing.span_style(s0)
         color = "#%06x" % s0.get("color", 0)
-        dlg = TextEditDialog(self.tab, text, round(s0["size"], 1), color, family, bold, italic)
+        page = self._page(pno)
+        original = fonts.embedded_font(page, s0.get("font", ""))
+        default_family = fonts.match_family(s0.get("font", "")) or \
+            {"sans": "Arial", "serif": "Times New Roman", "mono": "Courier New"}[family]
+        dlg = TextEditDialog(self.tab, text, round(s0["size"], 1), color, default_family, bold, italic,
+                             original=fonts.clean_font_name(s0.get("font", "")) if original else None)
         if dlg.exec() != QDialog.Accepted:
             return
+        new_text = dlg.text.text()
+        choice = dlg.family()
+        b, it_ = dlg.bold.isChecked(), dlg.italic.isChecked()
         self.checkpoint()
         page = self._page(pno)
         box = pymupdf.Rect(ln["bbox"])
@@ -1170,15 +1271,26 @@ class EditController(QObject):
         page.add_redact_annot(pymupdf.Rect(box.x0, box.y0 + inset, box.x1, box.y1 - inset))
         page.apply_redactions(images=pymupdf.PDF_REDACT_IMAGE_NONE, graphics=pymupdf.PDF_REDACT_LINE_ART_NONE,
                               text=pymupdf.PDF_REDACT_TEXT_REMOVE)
-        new_text = dlg.text.text()
         if new_text.strip():
-            fontname, fontfile = editing.font_for(dlg.family.currentData(), dlg.bold.isChecked(),
-                                                  dlg.italic.isChecked())
-            kw = {"fontname": fontname, "fontsize": dlg.size.value(), "color": _rgb(dlg.color)}
-            if fontfile:
-                kw["fontfile"] = fontfile
-                self.fonts_used = True
-            page.insert_text(pymupdf.Point(s0["origin"]), new_text, **kw)
+            size, rgb = dlg.size.value(), _rgb(dlg.color)
+            origin = pymupdf.Point(s0["origin"])
+            done = False
+            if choice == TextEditDialog.ORIGINAL:
+                if original and fonts.covers(original[1], new_text):
+                    editing.insert_words(page, origin, new_text, size, rgb, fontbuffer=original[1])
+                    done = True
+                else:
+                    choice = default_family
+                    self.tab.flash(tr("The document font lacks some characters: {f} was used.", f=default_family))
+            if not done:
+                path = fonts.font_file(choice, b, it_)
+                if path and not fonts.file_covers(path, new_text):
+                    path = fonts.font_file("Arial", b, it_) or path
+                    self.tab.flash(tr("“{f}” lacks some characters: Arial was used.", f=choice))
+                if not path:
+                    path = editing.font_for(family, b, it_)[1]
+                editing.insert_words(page, origin, new_text, size, rgb, fontfile=path)
+            self.fonts_used = True
         self._invalidate(pno)
 
     # forms ---------------------------------------------------------------------

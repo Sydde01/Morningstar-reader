@@ -55,6 +55,7 @@ class DocumentTab(QWidget):
     favoritesChanged = Signal()
     stateSaved = Signal()
     toolRequested = Signal(str, str)  # tool name, path
+    openRequested = Signal(str)
     fileSaved = Signal(str, str)      # old path, new path
 
     def __init__(self, path: str, db: Database, parent=None, password: str | None = None):
@@ -94,6 +95,11 @@ class DocumentTab(QWidget):
                                   f"border: 1px solid {theme.ACCENT}; border-radius: 6px;")
         self._flash.hide()
         self._flash_timer = QTimer(self, singleShot=True, interval=3500, timeout=self._flash.hide)
+        from .signing import has_signatures
+
+        if has_signatures(self.doc):
+            QTimer.singleShot(600, lambda: self.flash(tr("This document is digitally signed — "
+                                                          "Tools → Digital signatures")))
         self._apply_initial_state(st)
         self.reload_marks()
         db.update_doc(path, page_count=self.doc.page_count, last_opened=time.time())
@@ -189,6 +195,10 @@ class DocumentTab(QWidget):
         tm.addAction(icon("scissors"), tr("Split double pages…"), lambda: self.toolRequested.emit("split", self.path))
         tm.addAction(icon("convert"), tr("Convert…"), lambda: self.toolRequested.emit("convert", self.path))
         tm.addAction(icon("merge"), tr("Merge with other files…"), lambda: self.toolRequested.emit("merge", self.path))
+        tm.addSeparator()
+        tm.addAction(icon("search"), tr("Make searchable (OCR)…"), lambda: self.toolRequested.emit("ocr", self.path))
+        tm.addAction(icon("signature"), tr("Sign digitally…"), self.start_signing)
+        tm.addAction(icon("lock"), tr("Digital signatures…"), self.show_signatures)
         tools_btn.setMenu(tm)
         self.tb.addWidget(tools_btn)
         self._act("copy", tr("Copy"), self._copy_selection, "Ctrl+C", tb=False)
@@ -405,10 +415,71 @@ class DocumentTab(QWidget):
             if r == QMessageBox.Yes:
                 self.toolRequested.emit("edit_as_pdf", self.path)
             return
-        ed.start()
+        if not ed.start():
+            self.a_edit.setChecked(False)
+            return
         self.a_edit.setChecked(True)
         if self.comic:
             self.flash(tr("Comic edit mode: pages are saved back as CBZ (a .bak copy is kept)."))
+
+    # ------------------------------------------------------------ signatures
+    def show_signatures(self) -> None:
+        if not self.doc.is_pdf:
+            QMessageBox.information(self, tr("Digital signatures"), tr("Only PDF files can be signed."))
+            return
+        from .signing_dialogs import SignaturesDialog
+
+        SignaturesDialog(self.path, self, self.password, on_sign=self.start_signing).exec()
+
+    def start_signing(self) -> None:
+        if not self.doc.is_pdf or (self.editor.active and self.editor.kind == "comic"):
+            QMessageBox.information(self, tr("Sign digitally"),
+                                    tr("Only PDF files can be signed. Convert this document to PDF first."))
+            return
+        if self.editor.dirty and not self.editor.ask_save():
+            return
+        from .signing_dialogs import SignDialog
+
+        dlg = SignDialog(self.path, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        opts = dlg.options()
+        if opts["visible"]:
+            self.editor.begin_pick_rect(lambda pno, rect: self._do_sign(opts, pno, rect),
+                                        tr("Drag the area of the signature on the page (Esc to cancel)."))
+        else:
+            self._do_sign(opts, None, None)
+
+    def _do_sign(self, opts: dict, pno, rect) -> None:
+        from . import editing, signing
+
+        unrot = None
+        if rect is not None:
+            page = self.doc.load_page(pno)
+            unrot = rect * page.derotation_matrix
+        replace = opts["replace"]
+        dst = self.path + ".signing.pdf" if replace else signing.signed_output_path(self.path)
+        QGuiApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            signing.sign_pdf(self.path, dst, opts["cert"], opts["password"], page=pno, rect=unrot,
+                             image=opts["image"], reason=opts["reason"], location=opts["location"],
+                             stamp_label=tr("Digitally signed by") + "\n%(signer)s\n%(ts)s",
+                             doc_password=self.password)
+        except Exception as e:  # noqa: BLE001
+            QGuiApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, tr("Sign digitally"), tr("Could not sign:\n{e}", e=e))
+            return
+        QGuiApplication.restoreOverrideCursor()
+        if replace:
+            self.release_file()
+            bak = editing.replace_with_backup(dst, self.path)
+            if bak:
+                self.db.add_backup(bak, self.path)
+            self.reload_from(self.path)
+            self.fileSaved.emit(self.path, self.path)
+            self.flash(tr("Signed. Previous version kept as .bak"))
+        else:
+            self.openRequested.emit(dst)
 
     def open_pages(self) -> None:
         if not self.editor.active:
@@ -899,6 +970,10 @@ class DocumentTab(QWidget):
         total = len(self._search_results)
         if not total:
             self.search_count.setText(tr("No results") if self._search_page >= self.doc.page_count else "")
+            if self._search_page >= self.doc.page_count and not self.reflow and not any(
+                    self.doc.load_page(i).get_text("text").strip()
+                    for i in range(0, self.doc.page_count, max(1, self.doc.page_count // 8))):
+                self.flash(tr("This document has no text layer (scan). Use Tools → Make searchable (OCR)."))
         else:
             self.search_count.setText(f"{self._search_index + 1} / {total}")
 

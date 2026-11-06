@@ -22,8 +22,15 @@ MIN_ZOOM, MAX_ZOOM = 0.1, 8.0
 CACHE_BYTES = 450 * 1024 * 1024
 
 
+def _is_dark(rgb) -> bool:
+    if not rgb or len(rgb) < 3:
+        return len(rgb) == 1 and rgb[0] < 0.3 if rgb else False
+    r, g, b = rgb[:3]
+    return 0.299 * r + 0.587 * g + 0.114 * b < 0.3
+
+
 class PageData:
-    __slots__ = ("page", "dl", "w", "h", "rotm", "links", "_words", "_images")
+    __slots__ = ("page", "dl", "w", "h", "rotm", "links", "_words", "_images", "_plain", "_overlays")
 
     def __init__(self, page: pymupdf.Page):
         self.page = page
@@ -39,6 +46,49 @@ class PageData:
             ln["from"] = ln["from"] * self.rotm
         self._words = None
         self._images = None
+        self._plain = None
+        self._overlays = None
+
+    def plain_dl(self) -> pymupdf.DisplayList:
+        """Page content without annotations / form fields (used by the dark-document filter)."""
+        if self._plain is None:
+            self._plain = self.page.get_displaylist(annots=False)
+        return self._plain
+
+    def overlays(self) -> list[tuple]:
+        """Annotations drawn on top of a dark page: (xref, rect, invert, opacity).
+
+        Coloured drawings keep their colours; black/dark ones (pen, text boxes) and form fields are
+        inverted so they stay readable on the dark background; highlights are blended softly."""
+        if self._overlays is None:
+            out = []
+            page = self.page
+            doc = page.parent
+            try:
+                for a in page.annots():
+                    t = a.type[1]
+                    if t in ("Popup", "Link"):
+                        continue
+                    if t == "FreeText":
+                        da = doc.xref_get_key(a.xref, "DA")[1] or ""
+                        nums = []
+                        for tok in da.split():
+                            if tok in ("rg", "g"):
+                                break
+                            try:
+                                nums.append(float(tok))
+                            except ValueError:
+                                nums = []
+                        inv = _is_dark(nums[-3:] if "rg" in da else nums[-1:]) if nums else True
+                    else:
+                        inv = _is_dark((a.colors or {}).get("stroke") or [])
+                    out.append((a.xref, pymupdf.Rect(a.rect), inv, 0.45 if t == "Highlight" else 1.0))
+                for w in page.widgets():
+                    out.append((w.xref, pymupdf.Rect(w.rect), True, 1.0))
+            except Exception:  # noqa: BLE001
+                pass
+            self._overlays = out
+        return self._overlays
 
     def words(self) -> list:
         if self._words is None:
@@ -666,7 +716,7 @@ class PageCanvas(QAbstractScrollArea):
             w, h = self._disp_size(page)
             s = PREVIEW_W / max(w, 1)
             m = pymupdf.Matrix(s, s).prerotate(self.rotation)
-            pix = pd.dl.get_pixmap(matrix=m, alpha=False)
+            pix = (pd.dl if sig is None else pd.plain_dl()).get_pixmap(matrix=m, alpha=False)
             bbox = pymupdf.Rect(0, 0, pd.w, pd.h) * m
         else:
             rs, tx, ty = key[2], key[5], key[6]
@@ -675,13 +725,19 @@ class PageCanvas(QAbstractScrollArea):
             dev = pymupdf.Rect(bbox.x0 + tx * TILE, bbox.y0 + ty * TILE,
                                min(bbox.x1, bbox.x0 + (tx + 1) * TILE), min(bbox.y1, bbox.y0 + (ty + 1) * TILE))
             clip = dev * ~m
-            pix = pd.dl.get_pixmap(matrix=m, clip=clip, alpha=False)
+            pix = (pd.dl if sig is None else pd.plain_dl()).get_pixmap(matrix=m, clip=clip, alpha=False)
         if sig is not None:
             keep = None
             if sig[2]:
                 keep = [(r * m).irect for r in pd.image_rects()]
             apply_dark(pix, hex_to_int(sig[0]), hex_to_int(sig[1]), keep)
         img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888).copy()
+        if sig is not None:
+            try:
+                if pd.overlays():
+                    self._draw_overlays(img, pd, m, pix)
+            except Exception:  # noqa: BLE001 - never lose the page because of an annotation
+                pass
         ox = pix.x - bbox.x0
         oy = pix.y - bbox.y0
         self._cache[key] = (img, int(round(ox)), int(round(oy)))
@@ -689,6 +745,31 @@ class PageCanvas(QAbstractScrollArea):
         while self._cache_bytes > CACHE_BYTES and len(self._cache) > 1:
             _k, (old, _x, _y) = self._cache.popitem(last=False)
             self._cache_bytes -= old.sizeInBytes()
+
+    def _draw_overlays(self, img: QImage, pd: PageData, m: pymupdf.Matrix, pix: pymupdf.Pixmap) -> None:
+        """Paint annotations, untouched by the dark filter, on top of a dark tile."""
+        tile = pymupdf.Rect(pix.x, pix.y, pix.x + pix.width, pix.y + pix.height)
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        for xref, rect, invert, opacity in pd.overlays():
+            if ((rect * m) & tile).is_empty:
+                continue
+            try:
+                annot = pd.page.load_annot(xref)
+                if annot is None:
+                    continue
+                ap = annot.get_pixmap(matrix=m, alpha=True)
+            except Exception:  # noqa: BLE001
+                continue
+            if ap.n != 4:
+                continue
+            aimg = QImage(ap.samples, ap.width, ap.height, ap.stride, QImage.Format_RGBA8888_Premultiplied).copy()
+            if invert:
+                aimg = aimg.convertToFormat(QImage.Format_ARGB32)
+                aimg.invertPixels(QImage.InvertRgb)
+            painter.setOpacity(opacity)
+            painter.drawImage(ap.x - pix.x, ap.y - pix.y, aimg)
+        painter.end()
 
     # --------------------------------------------------------------- painting
     def paintEvent(self, _ev) -> None:
