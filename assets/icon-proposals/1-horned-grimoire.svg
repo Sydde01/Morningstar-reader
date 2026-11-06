@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<defs>
+  <radialGradient id="bg" cx="50%" cy="42%" r="70%">
+    <stop offset="0" stop-color="#2a0c10"/>
+    <stop offset="1" stop-color="#0b0b0d"/>
+  </radialGradient>
+  <linearGradient id="horn" x1="0" y1="1" x2="0" y2="0">
+    <stop offset="0" stop-color="#8e1622"/>
+    <stop offset="1" stop-color="#e0303f"/>
+  </linearGradient>
+  <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+    <stop offset="0" stop-color="#e0303f" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#e0303f" stop-opacity="0"/>
+  </radialGradient>
+</defs>
+<rect x="8" y="8" width="240" height="240" rx="54" fill="url(#bg)"/>
+<rect x="8" y="8" width="240" height="240" rx="54" fill="none" stroke="#3a1418" stroke-width="3"/>
+
+<ellipse cx="128" cy="150" rx="100" ry="70" fill="url(#glow)"/>
+<path d="M104 118 C 92 86, 70 66, 46 46 C 84 54, 112 80, 122 114 Z" fill="url(#horn)"/>
+<path d="M152 118 C 164 86, 186 66, 210 46 C 172 54, 144 80, 134 114 Z" fill="url(#horn)"/>
+<path d="M128 210 C 98 196, 68 194, 36 200 L 36 112 C 68 104, 100 106, 128 122 Z" fill="#1c0a0d" stroke="#e0303f" stroke-width="5" stroke-linejoin="round"/>
+<path d="M128 210 C 158 196, 188 194, 220 200 L 220 112 C 188 104, 156 106, 128 122 Z" fill="#1c0a0d" stroke="#e0303f" stroke-width="5" stroke-linejoin="round"/>
+<path d="M128 200 C 102 188, 74 186, 46 190 L 46 118 C 74 112, 102 114, 128 128 Z" fill="#f4f1ee"/>
+<path d="M128 200 C 154 188, 182 186, 210 190 L 210 118 C 182 112, 154 114, 128 128 Z" fill="#ffffff"/>
+<path d="M128 128 L 128 200" stroke="#bdb6b0" stroke-width="2.5"/>
+<g stroke="#9c9690" stroke-width="4" stroke-linecap="round">
+  <path d="M60 136 C 80 132, 98 134, 114 140"/><path d="M60 152 C 80 148, 98 150, 114 156"/>
+  <path d="M60 168 C 80 164, 98 166, 114 172"/>
+  <path d="M142 140 C 158 134, 176 132, 196 136"/><path d="M142 156 C 158 150, 176 148, 196 152"/>
+</g>
+<path d="M170.0,161.0 L172.8,169.2 L181.0,172.0 L172.8,174.8 L170.0,183.0 L167.2,174.8 L159.0,172.0 L167.2,169.2 Z" fill="#e0303f"/>
+</svg>

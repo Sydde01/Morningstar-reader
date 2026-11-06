@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<defs>
+  <radialGradient id="bg" cx="50%" cy="42%" r="70%">
+    <stop offset="0" stop-color="#2a0c10"/>
+    <stop offset="1" stop-color="#0b0b0d"/>
+  </radialGradient>
+  <linearGradient id="horn" x1="0" y1="1" x2="0" y2="0">
+    <stop offset="0" stop-color="#8e1622"/>
+    <stop offset="1" stop-color="#e0303f"/>
+  </linearGradient>
+  <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+    <stop offset="0" stop-color="#e0303f" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#e0303f" stop-opacity="0"/>
+  </radialGradient>
+</defs>
+<rect x="8" y="8" width="240" height="240" rx="54" fill="url(#bg)"/>
+<rect x="8" y="8" width="240" height="240" rx="54" fill="none" stroke="#3a1418" stroke-width="3"/>
+
+<circle cx="128" cy="132" r="100" fill="url(#glow)"/>
+<path d="M58 206 L 58 86 L 84 86 L 128 150 L 172 86 L 198 86 L 198 206 L 172 206 L 172 132 L 136 184
+         L 120 184 L 84 132 L 84 206 Z" fill="#ffffff"/>
+<path d="M58 86 C 50 62, 38 48, 24 38 C 46 44, 62 58, 74 86 Z" fill="url(#horn)"/>
+<path d="M198 86 C 206 62, 218 48, 232 38 C 210 44, 194 58, 182 86 Z" fill="url(#horn)"/>
+<path d="M128.0,48.0 L132.9,67.1 L152.0,72.0 L132.9,76.9 L128.0,96.0 L123.1,76.9 L104.0,72.0 L123.1,67.1 Z" fill="#e0303f"/>
+<rect x="44" y="214" width="168" height="6" rx="3" fill="#e0303f"/>
+</svg>
