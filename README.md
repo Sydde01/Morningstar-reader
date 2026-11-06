@@ -91,7 +91,9 @@ already have:
 Press **Edit** in a document's toolbar to open a second toolbar with editing tools:
 
 - **Fill in PDF forms.** Click a field to type, or tick checkboxes and pick list values. This works even outside
-  edit mode, and fields are highlighted.
+  edit mode (Ctrl+S saves), and fields are highlighted. For *hybrid* XFA forms (common for government forms), the
+  XFA copy is removed when saving, so Adobe Reader shows the values you typed. Purely dynamic XFA forms are
+  detected and reported (only Adobe can render them).
 - **Add text** anywhere, for forms without fields. The text is a movable, editable annotation.
 - **Edit existing text.** Click a line, then change its wording, size, color, bold / italic and **font**. You can
   pick **any font installed on Windows** (searchable list with a live preview), or **the document's own font**
@@ -135,9 +137,13 @@ Press **Edit** in a document's toolbar to open a second toolbar with editing too
 - **Make searchable (OCR).** Text recognition (French and English, other languages can be added) adds an
   invisible text layer to scanned PDFs and comics. You can then search, select and copy their text, and the page
   images are untouched. It writes a new “(OCR)” PDF, or replaces the PDF and keeps a `.bak`. It works on files and
-  whole folders, and uses the Tesseract engine built into MuPDF, so there's nothing to install.
+  whole folders, and uses the Tesseract engine built into MuPDF, so there's nothing to install. **More languages**
+  (German, Spanish, Japanese including vertical text for manga, Chinese, Korean, Russian, Arabic, and around 30
+  more) can be downloaded from the OCR dialog.
 - **Digital signatures (certificates).**
-  - Sign a PDF with your **.pfx / .p12 certificate**, or create a **personal certificate** in one click.
+  - Sign a PDF with a certificate from the **Windows certificate store**, including **smart cards and USB
+    signing keys** (the private key stays in Windows, which asks for the PIN). You can also use a **.pfx / .p12
+    file**, or create a **personal certificate** in one click.
   - The signature can be visible (drag its area on the page, optionally with your handwritten signature) or
     invisible. You can add a reason and a location.
   - The signature goes into a new “(signed)” file, or into the file itself with a `.bak` copy. Existing signatures
@@ -224,10 +230,10 @@ is kept as `.bak` until you purge it.
   annotations.
 - Editing existing text works line by line. The document's own font can only be reused when it's embedded and
   contains the new characters (fonts are often subsets); otherwise the closest installed font is used.
-- XFA forms (an old Adobe format) aren't supported.
-- Signing uses certificate files (.pfx / .p12). Smart cards and tokens (Windows certificate store) aren't
-  supported yet. A personal certificate is cryptographically valid but shows as “unknown identity” in other
-  readers.
+- Purely dynamic XFA forms can't be displayed (only Adobe Reader can render them). Hybrid ones work.
+- Smart cards and USB keys need their Windows driver (minidriver), which is the usual case for French / EU
+  signing certificates. PKCS#11-only tokens aren't supported. A personal certificate is cryptographically valid
+  but shows as “unknown identity” in other readers.
 
 ## Project layout
 
@@ -247,6 +253,7 @@ morningstar/
   editing.py        saving helpers, .bak handling, text insertion
   fonts.py          installed Windows fonts, document fonts
   signing.py        certificates, signing and verification (pyHanko)
+  winstore.py       signing through the Windows certificate store (CNG / CryptoAPI, smart cards)
   signing_dialogs.py
   docbackend.py     MuPDF opening, CBR support, dark-page filter
   settings_dialog.py, theme.py, icons.py, i18n.py, translations_fr.py, db.py, config.py

@@ -7,7 +7,7 @@ import os
 import zipfile
 
 import pymupdf
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
@@ -294,6 +294,168 @@ class ConvertDialog(_JobDialog):
 
 
 # ============================================================================== OCR
+OCR_LANGS = {
+    "fra": "French", "eng": "English", "deu": "German", "spa": "Spanish", "ita": "Italian",
+    "por": "Portuguese", "nld": "Dutch", "pol": "Polish", "rus": "Russian", "ukr": "Ukrainian",
+    "ell": "Greek", "tur": "Turkish", "ara": "Arabic", "heb": "Hebrew", "lat": "Latin",
+    "jpn": "Japanese", "jpn_vert": "Japanese (vertical)", "chi_sim": "Chinese (simplified)",
+    "chi_tra": "Chinese (traditional)", "chi_tra_vert": "Chinese (traditional, vertical)",
+    "kor": "Korean", "kor_vert": "Korean (vertical)", "vie": "Vietnamese", "hin": "Hindi",
+    "swe": "Swedish", "dan": "Danish", "nor": "Norwegian", "fin": "Finnish", "ces": "Czech", "ron": "Romanian",
+    "hun": "Hungarian", "cat": "Catalan", "bre": "Breton", "eus": "Basque", "cos": "Corsican",
+}
+
+
+class _Downloader(QObject):
+    """Sequential downloads with Qt's own network stack (asynchronous, no Python thread)."""
+    progress = Signal(str, int)  # language code, percent
+    done = Signal(str, str)      # language code, error ("" = ok)
+    finished = Signal()
+
+    def __init__(self, codes: list[str], parent=None):
+        super().__init__(parent)
+        from PySide6.QtNetwork import QNetworkAccessManager
+
+        self.codes = list(codes)
+        self.nam = QNetworkAccessManager(self)
+        self.reply = None
+        self.folder = convert.user_tessdata()
+        os.makedirs(self.folder, exist_ok=True)
+        self._running = False
+
+    def start(self) -> None:
+        self._running = True
+        self._next()
+
+    def isRunning(self) -> bool:  # noqa: N802 - mirrors QThread
+        return self._running
+
+    def stop(self) -> None:
+        self.codes.clear()
+        if self.reply is not None:
+            self.reply.abort()
+
+    def wait(self, _ms: int = 0) -> None:
+        pass
+
+    def _next(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtNetwork import QNetworkRequest
+
+        if not self.codes:
+            self._running = False
+            convert.tessdata_dir()  # copies the bundled French / English next to the downloads
+            self.finished.emit()
+            return
+        code = self.codes.pop(0)
+        req = QNetworkRequest(QUrl(convert.OCR_DOWNLOAD_URL.format(code=code)))
+        req.setHeader(QNetworkRequest.UserAgentHeader, "MorningstarReader")
+        req.setAttribute(QNetworkRequest.RedirectPolicyAttribute, QNetworkRequest.NoLessSafeRedirectPolicy)
+        self.reply = self.nam.get(req)
+        self.reply.downloadProgress.connect(
+            lambda got, total, c=code: total > 0 and self.progress.emit(c, int(got * 100 / total)))
+        self.reply.finished.connect(lambda c=code: self._finished(c))
+
+    def _finished(self, code: str) -> None:
+        from PySide6.QtNetwork import QNetworkReply
+
+        reply, self.reply = self.reply, None
+        err = ""
+        if reply.error() != QNetworkReply.NoError:
+            err = reply.errorString()
+        else:
+            data = bytes(reply.readAll())
+            if len(data) < 1024 or data.lstrip().startswith((b"<", b"{")):
+                err = "not a language file"
+            else:
+                dst = os.path.join(self.folder, f"{code}.traineddata")
+                with open(dst + ".part", "wb") as fh:
+                    fh.write(data)
+                os.replace(dst + ".part", dst)
+        reply.deleteLater()
+        self.done.emit(code, err)
+        self._next()
+
+
+class OcrLanguagesDialog(QDialog):
+    """Download extra OCR languages (Tesseract “fast” models, Apache-2.0)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("OCR languages"))
+        self.resize(460, 560)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(tr("Check the languages to download (about 1 to 10 MB each). "
+                                "Installed languages are already checked."), objectName="dim", wordWrap=True))
+        self.list = QListWidget()
+        installed = set(convert.ocr_languages())
+        for code, name in sorted(OCR_LANGS.items(), key=lambda kv: tr(kv[1])):
+            it = QListWidgetItem(f"{tr(name)}  ({code})")
+            it.setData(Qt.UserRole, code)
+            if code in installed:
+                it.setFlags(Qt.ItemIsEnabled)
+                it.setCheckState(Qt.Checked)
+                it.setForeground(QColor(theme.TEXT_DIM))
+            else:
+                it.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+                it.setCheckState(Qt.Unchecked)
+            self.list.addItem(it)
+        lay.addWidget(self.list, 1)
+        self.status = QLabel(objectName="dim")
+        lay.addWidget(self.status)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.close_btn = QPushButton(tr("Close"))
+        self.close_btn.clicked.connect(self._close)
+        self.go = QPushButton(icon("down"), tr("Download"))
+        self.go.setProperty("accent", True)
+        self.go.clicked.connect(self._start)
+        row.addWidget(self.close_btn)
+        row.addWidget(self.go)
+        lay.addLayout(row)
+        self.thread: _Downloader | None = None
+        self.changed = False
+
+    def _start(self) -> None:
+        codes = [self.list.item(i).data(Qt.UserRole) for i in range(self.list.count())
+                 if self.list.item(i).flags() & Qt.ItemIsUserCheckable
+                 and self.list.item(i).checkState() == Qt.Checked]
+        if not codes:
+            return
+        self.go.setEnabled(False)
+        self.thread = _Downloader(codes, self)
+        self.thread.progress.connect(lambda c, p: self.status.setText(tr("Downloading {l}… {p}%", l=c, p=p)))
+        self.thread.done.connect(self._one_done)
+        self.thread.finished.connect(self._all_done)
+        self.thread.start()
+
+    def _one_done(self, code: str, err: str) -> None:
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.data(Qt.UserRole) == code:
+                if err:
+                    it.setToolTip(err)
+                    it.setForeground(QColor(theme.ACCENT))
+                else:
+                    it.setFlags(Qt.ItemIsEnabled)
+                    it.setForeground(QColor("#3d9970"))
+                    self.changed = True
+
+    def _all_done(self) -> None:
+        self.go.setEnabled(True)
+        self.status.setText(tr("Done.") if self.changed else tr("Download failed (check your connection)."))
+        self.thread = None
+
+    def _close(self) -> None:
+        if self.thread is not None:
+            self.thread.stop()
+            self.thread.wait(3000)
+        self.done(1 if self.changed else 0)
+
+    def reject(self) -> None:
+        self._close()
+
+
 class OcrDialog(_JobDialog):
     """Add a searchable text layer to scanned PDFs / comics (new file, or replace the PDF keeping a .bak)."""
 
@@ -321,12 +483,13 @@ class OcrDialog(_JobDialog):
         form = QFormLayout()
         self.lang = QComboBox()
         langs = convert.ocr_languages()
-        names = {"fra": tr("French"), "eng": tr("English")}
-        if "fra" in langs and "eng" in langs:
-            self.lang.addItem(tr("French + English"), "fra+eng")
-        for code in langs:
-            self.lang.addItem(names.get(code, code), code)
-        form.addRow(tr("Language"), self.lang)
+        self._fill_langs()
+        lrow = QHBoxLayout()
+        lrow.addWidget(self.lang, 1)
+        more = QPushButton(icon("down"), tr("More languages…"))
+        more.clicked.connect(self._more_langs)
+        lrow.addWidget(more)
+        form.addRow(tr("Language"), lrow)
         self.quality = QComboBox()
         self.quality.addItem(tr("Accurate (300 dpi)"), 300)
         self.quality.addItem(tr("Fast (200 dpi)"), 200)
@@ -347,6 +510,24 @@ class OcrDialog(_JobDialog):
         self.ok_btn.setEnabled(bool(langs))
         self.open_btn.clicked.connect(lambda: self.created and self.parent() and
                                       getattr(self.parent(), "open_path", lambda *_: None)(self.created[0]))
+
+    def _fill_langs(self) -> None:
+        cur = self.lang.currentData()
+        self.lang.clear()
+        langs = convert.ocr_languages()
+        if "fra" in langs and "eng" in langs:
+            self.lang.addItem(tr("French + English"), "fra+eng")
+        if "jpn" in langs and "jpn_vert" in langs:
+            self.lang.addItem(tr(OCR_LANGS["jpn"]) + " + " + tr(OCR_LANGS["jpn_vert"]), "jpn+jpn_vert")
+        for code in langs:
+            self.lang.addItem(tr(OCR_LANGS.get(code, code)), code)
+        if cur:
+            self.lang.setCurrentIndex(max(0, self.lang.findData(cur)))
+
+    def _more_langs(self) -> None:
+        if OcrLanguagesDialog(self).exec():
+            self._fill_langs()
+            self.ok_btn.setEnabled(self.lang.count() > 0)
 
     def _add(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(self, tr("Add files…"), "", "PDF / Comics (*.pdf *.cbz *.cbr)")

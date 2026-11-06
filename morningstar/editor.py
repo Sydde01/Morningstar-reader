@@ -407,6 +407,15 @@ class EditController(QObject):
         self._fields: dict[int, list] = {}
         self._lines: dict[int, list] = {}
         self.toolbar: QToolBar | None = None
+        # Shortcuts live on the tab so they also work for form filling outside edit mode.
+        for seq, slot in (("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo),
+                          ("Ctrl+S", lambda: self.save() if (self.dirty or self.active) else None),
+                          ("Ctrl+Shift+S", lambda: self.save(save_as=True) if self.can_edit() else None)):
+            sc = QAction(tab)
+            sc.setShortcut(QKeySequence(seq))
+            sc.setShortcutContext(Qt.WidgetWithChildrenShortcut)
+            sc.triggered.connect(lambda _c=False, f=slot: f())
+            tab.addAction(sc)
 
     # ------------------------------------------------------------ helpers
     @property
@@ -661,13 +670,6 @@ class EditController(QObject):
         done = QPushButton(icon("check"), tr("Close editing"))
         done.clicked.connect(self.tab.toggle_edit)
         tb.addWidget(done)
-        for seq, slot in (("Ctrl+Z", self.undo), ("Ctrl+Y", self.redo), ("Ctrl+Shift+Z", self.redo),
-                          ("Ctrl+S", lambda: self.save()), ("Ctrl+Shift+S", lambda: self.save(save_as=True))):
-            sc = QAction(self.tab)
-            sc.setShortcut(QKeySequence(seq))
-            sc.setShortcutContext(Qt.WidgetWithChildrenShortcut)
-            sc.triggered.connect(lambda _c=False, f=slot: f() if self.active else None)
-            self.tab.addAction(sc)
         self.tab.layout().insertWidget(1, tb)
         self._sync_undo_actions()
         self._paint_color_btn()
@@ -1462,6 +1464,10 @@ class EditController(QObject):
     def save(self, save_as: bool = False) -> bool:
         self._commit_inline()
         tab = self.tab
+        if self.kind is None:  # e.g. a form filled in without entering edit mode
+            if not self.doc.is_pdf:
+                return False
+            self.kind = "pdf"
         old_path = tab.path
         base, ext = os.path.splitext(old_path)
         if save_as:
@@ -1475,6 +1481,8 @@ class EditController(QObject):
         else:
             dst = old_path if self.kind == "pdf" else (old_path if ext.lower() == ".cbz" else base + ".cbz")
         out_pdf = dst.lower().endswith(".pdf")
+        if out_pdf and self.kind == "pdf" and editing.has_xfa(self.doc) and self.doc.is_form_pdf:
+            editing.remove_xfa(self.doc)  # hybrid form: keep only the fields we filled in
         tmp = dst + ".new"
         try:
             if out_pdf:
@@ -1489,14 +1497,28 @@ class EditController(QObject):
             QMessageBox.warning(tab, tr("Save"), tr("Could not save:\n{e}", e=e))
             return False
 
-        if save_as:
-            os.replace(tmp, dst)
-        else:
-            if self.kind == "pdf":
-                tab.release_file()  # the original PDF must be closed before it can be replaced on Windows
-            bak = editing.replace_with_backup(tmp, old_path, dst)
-            if bak:
-                tab.db.add_backup(bak, old_path)
+        try:
+            if save_as:
+                os.replace(tmp, dst)
+            else:
+                if self.kind == "pdf":
+                    tab.release_file()  # the original PDF must be closed before it can be replaced on Windows
+                bak = editing.replace_with_backup(tmp, old_path, dst)
+                if bak:
+                    tab.db.add_backup(bak, old_path)
+        except OSError as e:
+            # File locked by another program (Adobe, antivirus, sync…): keep the edits in memory.
+            if os.path.exists(tmp):
+                if self.kind == "pdf" and not save_as:
+                    with open(tmp, "rb") as fh:
+                        data = fh.read()
+                    tab.doc = pymupdf.open("pdf", data)
+                    self.canvas.set_document(tab.doc)
+                    tab.on_document_replaced()
+                os.remove(tmp)
+            QMessageBox.warning(tab, tr("Save"), tr("The file is in use by another program (or read-only). "
+                                                    "Close it there and save again, or use “Save as”.\n\n{e}", e=e))
+            return False
         if dst != old_path and not save_as:
             tab.db.move_doc_state(old_path, dst)
         new_pw = self.save_opts["password"]

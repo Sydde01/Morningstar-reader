@@ -617,9 +617,36 @@ def merge(files: list[str], dst: str, opts: dict, progress, cancel) -> str:
 
 
 # --------------------------------------------------------------------- OCR
-def tessdata_dir() -> str | None:
-    """Tesseract language data shipped with the app (MuPDF has the OCR engine built in)."""
+OCR_DOWNLOAD_URL = "https://github.com/tesseract-ocr/tessdata_fast/raw/main/{code}.traineddata"
+
+
+def bundled_tessdata() -> str | None:
     import sys
+    base = getattr(sys, "_MEIPASS", None)
+    for c in ([os.path.join(base, "assets", "tessdata")] if base else []) + [
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "tessdata")]:
+        if os.path.isdir(c):
+            return c
+    return None
+
+
+def user_tessdata() -> str:
+    from .config import CACHE_DIR
+    return str(CACHE_DIR / "tessdata")
+
+
+def tessdata_dir() -> str | None:
+    """Tesseract language data (MuPDF has the OCR engine built in). Languages downloaded by the user live in
+    %LOCALAPPDATA%; the bundled French / English models are copied next to them (MuPDF needs one folder)."""
+    import sys
+    user = user_tessdata()
+    if os.path.isdir(user) and any(f.endswith(".traineddata") for f in os.listdir(user)):
+        bundled = bundled_tessdata()
+        if bundled:
+            for f in os.listdir(bundled):
+                if f.endswith(".traineddata") and not os.path.exists(os.path.join(user, f)):
+                    shutil.copyfile(os.path.join(bundled, f), os.path.join(user, f))
+        return user
     cands = [os.environ.get("TESSDATA_PREFIX", "")]
     base = getattr(sys, "_MEIPASS", None)
     if base:

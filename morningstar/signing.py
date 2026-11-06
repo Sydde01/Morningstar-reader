@@ -114,9 +114,14 @@ def sign_pdf(src: str, dst: str, cert_path: str, password: str, *, page: int | N
     from pyhanko.pdf_utils.text import TextBoxStyle
     from pyhanko.sign import fields, signers
 
-    signer = signers.SimpleSigner.load_pkcs12(cert_path, passphrase=password.encode("utf-8"))
-    if signer is None:
-        raise SignError("bad_password")
+    if cert_path.startswith("win:"):
+        from .winstore import make_signer
+
+        signer = make_signer(cert_path[4:])
+    else:
+        signer = signers.SimpleSigner.load_pkcs12(cert_path, passphrase=password.encode("utf-8"))
+        if signer is None:
+            raise SignError("bad_password")
     work = tempfile.mktemp(prefix="msr_sign_", suffix=".pdf", dir=os.path.dirname(dst) or None)
     shutil.copyfile(src, work)
     try:
@@ -161,6 +166,9 @@ def sign_pdf(src: str, dst: str, cert_path: str, password: str, *, page: int | N
         os.replace(part, dst)
         return dst
     finally:
+        store = getattr(signer, "_msr_store", None)
+        if store is not None:
+            store.close()
         for p in (work, dst + ".part"):
             if os.path.exists(p):
                 try:

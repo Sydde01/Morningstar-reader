@@ -97,7 +97,12 @@ class DocumentTab(QWidget):
         self._flash_timer = QTimer(self, singleShot=True, interval=3500, timeout=self._flash.hide)
         from .signing import has_signatures
 
-        if has_signatures(self.doc):
+        from .editing import is_dynamic_xfa
+
+        if is_dynamic_xfa(self.doc):
+            QTimer.singleShot(600, lambda: self.flash(tr("Dynamic XFA form: it can only be displayed and filled "
+                                                          "in Adobe Reader.")))
+        elif has_signatures(self.doc):
             QTimer.singleShot(600, lambda: self.flash(tr("This document is digitally signed — "
                                                           "Tools → Digital signatures")))
         self._apply_initial_state(st)

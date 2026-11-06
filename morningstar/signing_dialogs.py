@@ -77,9 +77,14 @@ class SignDialog(QDialog):
         b = QPushButton(icon("lock"), tr("Create…"))
         b.clicked.connect(self._create)
         crow.addWidget(b)
+        b = QPushButton(icon("refresh"), "")
+        b.setToolTip(tr("Refresh (after inserting a smart card or USB key)"))
+        b.clicked.connect(lambda: self._fill(self.cert.currentData()))
+        crow.addWidget(b)
         form.addRow(tr("Certificate"), crow)
         self.pw = QLineEdit(echoMode=QLineEdit.Password)
         self.pw.textChanged.connect(lambda: self.info.setText(""))
+        self.cert.currentIndexChanged.connect(self._cert_changed)
         form.addRow(tr("Certificate password"), self.pw)
         self.info = QLabel(objectName="dim", wordWrap=True)
         form.addRow("", self.info)
@@ -118,13 +123,27 @@ class SignDialog(QDialog):
         self._fill()
 
     def _fill(self, select: str | None = None) -> None:
+        from .winstore import list_signing_certificates
+
+        self.cert.blockSignals(True)
         self.cert.clear()
+        for c in list_signing_certificates():
+            self.cert.addItem(icon("form", theme.ACCENT), f"{c['name']} — {c['issuer']}  ({tr('Windows / smart card')})",
+                              "win:" + c["thumbprint"])
+            self.cert.setItemData(self.cert.count() - 1, tr("Expires {d}", d=c["expires"]), Qt.ToolTipRole)
         for p in signing.list_certificates():
             self.cert.addItem(icon("lock", theme.TEXT_DIM), os.path.splitext(os.path.basename(p))[0], p)
         if select:
             self.cert.setCurrentIndex(max(0, self.cert.findData(select)))
+        self.cert.blockSignals(False)
+        self._cert_changed()
         if self.cert.count() == 0:
             self.info.setText(tr("No certificate yet: import yours (.pfx / .p12) or create a personal one."))
+
+    def _cert_changed(self, *_a) -> None:
+        win = str(self.cert.currentData() or "").startswith("win:")
+        self.pw.setEnabled(not win)
+        self.pw.setPlaceholderText(tr("Windows will ask for the PIN if needed") if win else "")
 
     def _import(self) -> None:
         f, _ = QFileDialog.getOpenFileName(self, tr("Import .pfx / .p12…"), "", "Certificates (*.pfx *.p12)")
@@ -153,6 +172,10 @@ class SignDialog(QDialog):
         path = self.cert.currentData()
         if not path:
             QMessageBox.warning(self, self.windowTitle(), tr("Choose or create a certificate."))
+            return
+        if path.startswith("win:"):
+            self.summary = {"name": self.cert.currentText()}
+            self.accept()
             return
         try:
             summary = signing.certificate_summary(path, self.pw.text())

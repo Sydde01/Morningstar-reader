@@ -147,3 +147,28 @@ def insert_words(page: pymupdf.Page, origin, text: str, fontsize: float, color, 
         if i < len(text.split(" ")) - 1:
             x += space
     tw.write_text(page)
+
+
+# ------------------------------------------------------------------- XFA forms
+def has_xfa(doc: pymupdf.Document) -> bool:
+    if not doc.is_pdf:
+        return False
+    try:
+        kind, _val = doc.xref_get_key(doc.pdf_catalog(), "AcroForm/XFA")
+        return kind not in ("null", "")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def is_dynamic_xfa(doc: pymupdf.Document) -> bool:
+    """Pure XFA form (no regular form fields): only Adobe Reader can display it."""
+    return has_xfa(doc) and not doc.is_form_pdf
+
+
+def remove_xfa(doc: pymupdf.Document) -> None:
+    """Hybrid forms: drop the XFA copy so every reader (Adobe included) shows the filled-in fields."""
+    doc.xref_set_key(doc.pdf_catalog(), "AcroForm/XFA", "null")
+    try:
+        doc.xref_set_key(doc.pdf_catalog(), "NeedsRendering", "null")
+    except Exception:  # noqa: BLE001
+        pass
